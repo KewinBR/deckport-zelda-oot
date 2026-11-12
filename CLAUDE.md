@@ -6,7 +6,8 @@ de mexer aqui.
 
 ## Regras
 
-- **Nada do jogo neste repositório**, nem nas versões: texturas, tabelas, logo do jogo, capturas com arte do jogo.
+- **Nada do jogo neste repositório**, nem nas versões: texturas, tabelas, capturas com arte do jogo. O logo do port
+  (`arte/logo.png`) foi feito pelo Kewin com IA e ele liberou o uso público em 2026-11-12.
   Tudo o que depende do jogo é gerado no Deck do jogador, a partir da cópia dele. O `ferramentas/montar-pacote.sh`
   recusa o pacote se achar arquivo do jogo.
 - **GPL-3.0**, a licença do Hookshot. Cada versão leva em `patches/` os scripts e a diferença inteira
@@ -19,12 +20,11 @@ de mexer aqui.
 
 - `ferramentas/sincronizar.sh` copia do `steam-deck` o lançador, os ajudantes, as ferramentas dos mods e os patches.
   Não editar essas cópias aqui: editar lá e sincronizar.
-- `ferramentas/gerar_assets.py` desenha as artes (fundos, logos em texto, artes da Steam, logo da abertura) com fontes
-  de licença aberta. O logo da abertura tem geometria fixa: a faixa "STEAMDECK VERSION" fica em x >= 210 e y de 407 a
+- `ferramentas/gerar_assets.py` monta as artes (fundos, artes da Steam, logo da abertura) a partir de `arte/logo.png`
+  e de fundos desenhados por ele. O logo tem geometria fixa: a faixa "STEAMDECK VERSION" fica em x >= 210 e y de 407 a
   441, que é o que o renderizador revela com o flare.
-- O renderizador público é compilado na VPS com `arte/logo-abertura.png` no lugar do `assets/hookshot.png` da árvore
-  do Hookshot, e guardado como `~/zelda-oot/hookshot_vk-210-publico.so`. O do Deck do Kewin usa o logo do jogo e não
-  pode ir para o pacote.
+- O renderizador é o mesmo do Deck do Kewin (`~/zelda-oot/hookshot_vk-210.so` na VPS), com `arte/logo.png` embutido
+  como logo da abertura.
 - `ferramentas/montar-pacote.sh vX.Y.Z` monta `dist/zelda-oot-deck-vX.Y.Z.tar.gz`.
 
 ## Instalador

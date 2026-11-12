@@ -105,7 +105,7 @@ class App:
                                    tags=tag)
 
     def cabeca(self, passo: int, titulo: str):
-        self.cv.create_image(56, 40, image=self.img["logo-horizontal"], anchor="nw")
+        self.cv.create_image(56, 30, image=self.img["logo-horizontal"], anchor="nw")
         x = W - 56
         for i in range(4, 0, -1):
             n = T(f"passo{i}")
@@ -115,7 +115,7 @@ class App:
             if i == passo:
                 self.cv.create_rectangle(x1, 76, x2, 79, fill=AM, width=0)
             x = x1 - 34
-        self.texto(56, 200, titulo, "tit64")
+        self.texto(56, 206, titulo, "tit64")
         self.cv.create_rectangle(56, 292, 136, 297, fill=AM, width=0)
 
     def rodape(self, itens: list[tuple[str, str]]):

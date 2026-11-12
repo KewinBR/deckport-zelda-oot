@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Gera as artes do port sem nenhum material do jogo: fundos do instalador, cartões, logos em texto, artes da Steam e
-o logo da tela de abertura. Tudo desenhado aqui com fontes de licença aberta (Cinzel Decorative e Barlow, OFL).
+"""Gera as artes do port: fundos do instalador, cartões, artes da Steam e o logo da tela de abertura, a partir do
+logo do port (arte/logo.png) e de fundos desenhados aqui. As fontes são de licença aberta (Cinzel Decorative e Barlow).
 
     python ferramentas/gerar_assets.py        (precisa do Pillow; roda no PC, não no Deck)
 """
@@ -136,6 +136,18 @@ def com_logo(base, lg, largura, x, y):
     return img.convert("RGB")
 
 
+def logo_do_port():
+    """O logo do port (arte/logo.png, 640x478), feito pelo Kewin com IA e liberado por ele para a versão pública
+    (2026-11-12). A faixa "STEAMDECK VERSION" fica em x >= 210 e y de 407 a 441: é o que a tela de abertura revela."""
+    return Image.open(ARTE / "logo.png").convert("RGBA")
+
+
+def com_sombra(lg, raio):
+    s = Image.new("RGBA", lg.size, (0, 0, 0, 0))
+    s.paste((0, 0, 0, 170), mask=lg.split()[3])
+    return Image.alpha_composite(s.filter(ImageFilter.GaussianBlur(raio)), lg)
+
+
 def main():
     for p in (SAIDA, STEAM, ARTE):
         p.mkdir(parents=True, exist_ok=True)
@@ -143,24 +155,23 @@ def main():
     fundo(W, H, escurece=0.15).save(SAIDA / "fundo-passos.png", optimize=True)
     fundo(W, H, escurece=0.25).save(SAIDA / "fundo-instalando.png", optimize=True)
     fundo(W, H, semente=11, brilho=(0.7, 0.5)).save(SAIDA / "fundo-pronto.png", optimize=True)
-    lv = logo_vertical(640)
-    lv.resize((440, round(lv.height * 440 / lv.width)), Image.LANCZOS).save(SAIDA / "logo-vertical.png", optimize=True)
-    logo_horizontal(360).save(SAIDA / "logo-horizontal.png", optimize=True)
+    lg = logo_do_port()
+    com_sombra(lg, 5).resize((440, round(lg.height * 440 / lg.width)), Image.LANCZOS).save(SAIDA / "logo-vertical.png", optimize=True)
+    lg.resize((round(lg.width * 132 / lg.height), 132), Image.LANCZOS).save(SAIDA / "logo-horizontal.png", optimize=True)
     for w, h in ((700, 92), (700, 100), (340, 92), (520, 64)):
         for sel in (False, True):
             card(w, h, sel).save(SAIDA / f"card-{w}x{h}{'-sel' if sel else ''}.png", optimize=True)
     # Steam: capa 600x900, horizontal 920x430, fundo 1920x620, logo e ícone
-    lg = logo_vertical(1280)
-    com_logo(fundo(600, 900, brilho=(0.5, 0.36)), lg, 540, -1, 250).save(STEAM / "capa.png", optimize=True)
-    com_logo(fundo(920, 430, brilho=(0.5, 0.5)), lg, 430, -1, -1).save(STEAM / "horizontal.png", optimize=True)
+    com_logo(fundo(600, 900, brilho=(0.5, 0.4)), com_sombra(lg, 6), 540, -1, 240).save(STEAM / "capa.png", optimize=True)
+    com_logo(fundo(920, 430, brilho=(0.5, 0.5)), com_sombra(lg, 6), 470, -1, -1).save(STEAM / "horizontal.png", optimize=True)
     fundo(1920, 620, brilho=(0.7, 0.45)).save(STEAM / "fundo.png", optimize=True)
-    logo_vertical(1280, sombra=False).save(STEAM / "logo.png", optimize=True)
+    lg.save(STEAM / "logo.png", optimize=True)
     ic = fundo(256, 256, brilho=(0.5, 0.5)).convert("RGBA")
-    d = ImageDraw.Draw(ic)
-    texto_ouro(d, (128, 118), "Z", fonte("CinzelDecorative-Bold.ttf", 190), "mm", OURO, 3)
+    pq = lg.resize((236, round(lg.height * 236 / lg.width)), Image.LANCZOS)
+    ic.alpha_composite(pq, (10, (256 - pq.height) // 2))
     ic.save(STEAM / "icone.png", optimize=True)
-    logo_abertura().save(ARTE / "logo-abertura.png", optimize=True)
-    lv.save(ARTE / "logo-vertical.png", optimize=True)
+    lg.save(ARTE / "logo-abertura.png", optimize=True)
+    lg.save(ARTE / "logo-vertical.png", optimize=True)
     print("artes geradas em", SAIDA, "e", ARTE)
 
 

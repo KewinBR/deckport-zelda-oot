@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Monta o pacote da versão: dist/zelda-oot-deck-vX.Y.Z.tar.gz com o renderizador do port (compilado na VPS com o logo
-# em texto, sem arte do jogo), o lançador, os ajudantes, as ferramentas dos mods e o instalador. Nada do jogo entra.
+# Monta o pacote da versão: dist/zelda-oot-deck-vX.Y.Z.tar.gz com o renderizador do port (compilado na VPS), o lançador, os ajudantes, as ferramentas dos mods e o instalador. Nada do jogo entra.
 #   bash ferramentas/montar-pacote.sh v0.1.0
 set -euo pipefail
 versao=${1:?versão, ex.: v0.1.0}
@@ -9,13 +8,14 @@ vps=${VPS:-kewin-vps}
 dist=$raiz/dist
 pkg=$dist/zelda-oot-deck
 rm -rf "$pkg"; mkdir -p "$pkg/renderizador"
-scp -q "$vps:zelda-oot/hookshot_vk-210-publico.so" "$pkg/renderizador/hookshot_vk.so"
+scp -q "$vps:zelda-oot/hookshot_vk-210.so" "$pkg/renderizador/hookshot_vk.so"
 cp -r "$raiz/instalador" "$raiz/deck" "$raiz/arte" "$raiz/patches" "$pkg/"
 cp "$raiz/rodar-zelda.sh" "$raiz/instalar.sh" "$raiz/LICENSE" "$raiz/README.md" "$raiz/README.pt-BR.md" "$pkg/"
 rm -rf "$pkg/instalador/__pycache__"
 echo "$versao" > "$pkg/VERSAO"
 # fim de linha do Linux em tudo o que roda no Deck (no Windows a cópia de trabalho pode estar com CRLF)
-find "$pkg" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.h" -o -name "*.patch" -o -name "*.md" -o -name "*.Dockerfile" \) -exec sed -i 's/$//' {} +
+find "$pkg" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.h" -o -name "*.patch" -o -name "*.md" -o -name "*.Dockerfile" \) -exec sed -i 's/
+$//' {} +
 # conferência: nenhum arquivo do jogo (texturas, pacotes, tabelas, imagem do executável, dados de save)
 if find "$pkg" -type f | grep -qiE '\.(nup|nsp|xci|bntx|zs|bfotf|blarc|byml|bgyml|sarc|bin)$'; then
     echo "ERRO: arquivo do jogo no pacote:"; find "$pkg" -type f | grep -iE '\.(nup|nsp|xci|bntx|zs|bfotf|blarc|byml|bgyml|sarc|bin)$'; exit 1
