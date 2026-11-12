@@ -37,3 +37,7 @@ Prévia no PC: `DEMO=1 PRINTS=<pasta> python instalador/instalador.py`.
 
 O renderizador do port só serve para o Hookshot v2.1.0. Trocar a base do Hookshot é trabalho do `steam-deck`
 (patches, testes), e só depois o número da versão muda em `nucleo.py`.
+
+## Publicação aprovada (2026-11-12)
+
+O Kewin aprovou deixar o repositório público e lançar a v0.1.0 em 2026-11-13, com o aviso no README de que a montagem pelo `.nup` dentro do instalador ainda não foi testada até o fim. Versões seguintes continuam precisando do OK dele na hora.
