@@ -219,16 +219,23 @@ class Instalacao(threading.Thread):
             if texto:
                 self.p.texto = texto
 
+    def _matar(self):
+        """O AppRun do Hookshot é um script que abre o Python da montagem por baixo: matar só ele deixa a extração
+        rodando. Cada processo nasce em sessão própria e sai o grupo inteiro."""
+        if self.proc and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, 9)
+            except OSError:
+                self.proc.kill()
+
     def _para(self):
         if self.cancelado:
-            if self.proc and self.proc.poll() is None:
-                self.proc.kill()
+            self._matar()
             raise RuntimeError("cancelado")
 
     def cancelar(self):
         self.cancelado = True
-        if self.proc and self.proc.poll() is None:
-            self.proc.kill()
+        self._matar()
 
     # ---- o Hookshot oficial
     def _hookshot(self) -> Path:
@@ -287,7 +294,7 @@ class Instalacao(threading.Thread):
         amb = dict(os.environ, HOOKSHOT_NO_UPDATE_CHECK="1")
         amb.pop("LD_PRELOAD", None)
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=amb,
-                                     errors="replace")
+                                     errors="replace", start_new_session=True)
         # ler os arquivos e traduzir vão até 25% da barra; compilar, de 25% a 100%
         faixa = {"read": (0.0, 0.10), "lift": (0.10, 0.25), "compile": (0.25, 1.0)}
         etapa, ini = "read", time.time()
@@ -317,6 +324,7 @@ class Instalacao(threading.Thread):
                 if m:
                     self._avanca(2, 0.10 * min(1.0, float(m.group(1)) / 26800))
         if self.proc.wait() != 0:
+            self._para()
             raise RuntimeError("a montagem do jogo pelo Hookshot falhou (%d): %s" % (self.proc.returncode,
                                                                                    " | ".join(ultimas[-4:])))
         shutil.rmtree(trabalho, ignore_errors=True)
@@ -338,7 +346,8 @@ class Instalacao(threading.Thread):
     # ---- os mods, gerados dos arquivos do jogo
     def _ferramenta(self, py: str, nome: str, args: list[str], etapa: int, a: float, b: float, padrao: str = ""):
         self.proc = subprocess.Popen([py, "-I", str(APPDIR / "deck" / "ferramentas" / nome), *args],
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+                                     start_new_session=True)
         ultimas = []
         for linha in self.proc.stdout:
             self._para()
@@ -348,6 +357,7 @@ class Instalacao(threading.Thread):
                 if m and float(m.group(2)) > 0:
                     self._avanca(etapa, a + (b - a) * float(m.group(1)) / float(m.group(2)))
         if self.proc.wait() != 0:
+            self._para()
             raise RuntimeError(f"{nome} falhou ({self.proc.returncode}): " + " | ".join(ultimas[-3:]))
         self._avanca(etapa, b)
 
