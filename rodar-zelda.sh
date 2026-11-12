@@ -182,12 +182,18 @@ trap 'kill "${ajudantes[@]}" 2>/dev/null' EXIT
 
 cd "$jogo"
 bin=./hookshot; [[ -x ./bin/hookshot ]] && bin=./bin/hookshot
+# Huge pages transparentes desligadas só para o jogo (2026-11-12, pista do issue #1000 do Hookshot): o SteamOS vem com
+# THP "always", e pedidos de blocos grandes com a memória fragmentada fazem o kernel despejar o jogo para o swap. O
+# prctl vale para o processo e passa pelo exec; o sistema não muda. No rancho, em 10 min, o fps não mudou; o efeito
+# esperado é em sessão longa. ZELDA_THP=1 deixa como o sistema manda.
+prefixo=()
+[[ ${ZELDA_THP:-0} != 1 && -f $scripts/sem-thp.py ]] && prefixo=(python3 "$scripts/sem-thp.py")
 # "Aplicar e reiniciar" do menu do port: o jogo deixa deckport_reiniciar ao lado do ini e fecha; aqui ele abre de novo
 # com as opções novas (os mods e a sombra só valem na abertura).
 rm -f "$jogo/deckport_reiniciar"
 while :; do
 echo "abrindo $bin"
-"${controle[@]}" "$bin" &
+"${controle[@]}" "${prefixo[@]}" "$bin" &
 pid_jogo=$!
 # Depois de um CRASH o Hookshot fica parado em vez de fechar: fecha ele, pra a pessoa voltar pro Game Mode.
 ( while kill -0 $pid_jogo 2>/dev/null; do
