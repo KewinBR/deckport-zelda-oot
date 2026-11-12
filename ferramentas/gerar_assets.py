@@ -60,6 +60,33 @@ def fundo(w, h, semente=7, escurece=0.0, brilho=(0.72, 0.42)):
     return img.convert("RGB")
 
 
+def cobrir(img, w, h, puxa=0.5):
+    """Cobre w x h sem distorcer. puxa: 0 recorta pela esquerda, 1 pela direita."""
+    sc = max(w / img.width, h / img.height)
+    a = img.resize((round(img.width * sc), round(img.height * sc)), Image.LANCZOS)
+    x = int((a.width - w) * puxa)
+    y = (a.height - h) // 2
+    return a.crop((x, y, x + w, y + h))
+
+
+def sombras(img, escurece=0.0):
+    """Sombra da esquerda (o texto fica ali) e de baixo, para o texto do instalador ler bem sobre a arte."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    ov = Image.new("RGBA", img.size)
+    d = ImageDraw.Draw(ov)
+    for i in range(w):
+        t = max(0.0, 1 - i / (w * 0.72))
+        d.line([(i, 0), (i, h)], fill=(5, 9, 8, int(248 * min(1.0, t * 1.25) ** 0.7)))
+    for j in range(h):
+        t = max(0.0, (j - h * 0.55) / (h * 0.45))
+        d.line([(0, j), (w, j)], fill=(5, 9, 8, int(200 * t)))
+    img.alpha_composite(ov)
+    if escurece:
+        img.alpha_composite(Image.new("RGBA", img.size, (5, 9, 8, int(255 * escurece))))
+    return img.convert("RGB")
+
+
 def texto_ouro(d, xy, s, f, anchor="la", cor=OURO, traco=0):
     if traco:
         d.text(xy, s, font=f, fill=cor, anchor=anchor, stroke_width=traco, stroke_fill=(10, 8, 4))
@@ -151,6 +178,8 @@ def com_sombra(lg, raio):
 def main():
     for p in (SAIDA, STEAM, ARTE):
         p.mkdir(parents=True, exist_ok=True)
+    # Fundos do instalador: desenhados aqui (verde-escuro com pontos de luz), com o logo do port por cima nas telas.
+    # A arte do Link com o Deck não entra: nela o Deck está com a tela virada para fora (apontado pelo Kewin).
     fundo(W, H).save(SAIDA / "fundo-inicio.png", optimize=True)
     fundo(W, H, escurece=0.15).save(SAIDA / "fundo-passos.png", optimize=True)
     fundo(W, H, escurece=0.25).save(SAIDA / "fundo-instalando.png", optimize=True)
@@ -162,14 +191,13 @@ def main():
         for sel in (False, True):
             card(w, h, sel).save(SAIDA / f"card-{w}x{h}{'-sel' if sel else ''}.png", optimize=True)
     # Steam: capa 600x900, horizontal 920x430, fundo 1920x620, logo e ícone
-    com_logo(fundo(600, 900, brilho=(0.5, 0.4)), com_sombra(lg, 6), 540, -1, 240).save(STEAM / "capa.png", optimize=True)
+    # Steam: a capa e o ícone são as artes do port (arte/steam/, feitas pelo Kewin com IA). A imagem horizontal e o
+    # fundo da página levam o logo sobre o fundo desenhado, até existir uma arte do Link com o Deck do lado certo.
+    Image.open(ARTE / "steam" / "capa_600x900.png").save(STEAM / "capa.png", optimize=True)
+    Image.open(ARTE / "steam" / "icone_256.png").save(STEAM / "icone.png", optimize=True)
     com_logo(fundo(920, 430, brilho=(0.5, 0.5)), com_sombra(lg, 6), 470, -1, -1).save(STEAM / "horizontal.png", optimize=True)
     fundo(1920, 620, brilho=(0.7, 0.45)).save(STEAM / "fundo.png", optimize=True)
     lg.save(STEAM / "logo.png", optimize=True)
-    ic = fundo(256, 256, brilho=(0.5, 0.5)).convert("RGBA")
-    pq = lg.resize((236, round(lg.height * 236 / lg.width)), Image.LANCZOS)
-    ic.alpha_composite(pq, (10, (256 - pq.height) // 2))
-    ic.save(STEAM / "icone.png", optimize=True)
     lg.save(ARTE / "logo-abertura.png", optimize=True)
     lg.save(ARTE / "logo-vertical.png", optimize=True)
     print("artes geradas em", SAIDA, "e", ARTE)

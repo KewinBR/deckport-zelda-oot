@@ -7,7 +7,8 @@ de mexer aqui.
 ## Regras
 
 - **Nada do jogo neste repositório**, nem nas versões: texturas, tabelas, capturas com arte do jogo. O logo do port
-  (`arte/logo.png`) foi feito pelo Kewin com IA e ele liberou o uso público em 2026-11-12.
+  (`arte/logo.png`) e pelo Kewin com IA e as artes da Steam (`arte/steam/`: capa, fundo, horizontal, ícone) foram feitos pelo Kewin com IA, e ele liberou o
+  uso público em 2026-11-12.
   Tudo o que depende do jogo é gerado no Deck do jogador, a partir da cópia dele. O `ferramentas/montar-pacote.sh`
   recusa o pacote se achar arquivo do jogo.
 - **GPL-3.0**, a licença do Hookshot. Cada versão leva em `patches/` os scripts e a diferença inteira
