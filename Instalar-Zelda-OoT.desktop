@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Instalar Zelda: Ocarina of Time (Deckport)
+Name[en]=Install Zelda: Ocarina of Time (Deckport)
+Comment=Instalador do Deckport para o Steam Deck. Precisa da sua própria cópia do jogo
+Exec=bash -c "curl -fsSL https://github.com/KewinBR/deckport-zelda-oot/releases/latest/download/instalar.sh | bash"
+Icon=applications-games
+Terminal=false
+Categories=Game;

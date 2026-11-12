@@ -1,0 +1,1586 @@
+diff --git a/gpu/vk/vk_deckport_menu.h b/gpu/vk/vk_deckport_menu.h
+new file mode 100644
+index 0000000..7276058
+--- /dev/null
++++ b/gpu/vk/vk_deckport_menu.h
+@@ -0,0 +1,697 @@
++// (Deckport) O menu do port no visual do menu de Sistema do jogo: abas em cima (L1/R1), coluna de seções à esquerda,
++// pergaminho com as opções à direita, dicas de botão no rodapé. Desenho aprovado pelo Kewin em 2026-11-10
++// (projetos/zelda-oot/menu/menu-deckport.html no repo steam-deck). Ocupa a tela inteira, na resolução da janela.
++// Desenhado com o Dear ImGui da v2.1.0 (fontes do próprio jogo: ui::Fonts). Incluído em vk_menu.cpp, dentro do
++// namespace anônimo, antes do draw_menu: usa as opções do
++// Hookshot (opts, rows, save, restart_state) e as do Deckport (opts.dp_*, linhas TAB_DECKPORT, gravadas no mesmo ini).
++// As opções que mudam mods ou variáveis da abertura (texturas, grama, distância, sombras, idioma) valem ao reiniciar:
++// "Aplicar e reiniciar" grava, deixa o arquivo deckport_reiniciar ao lado do ini e fecha o jogo; o rodar-zelda.sh vê o
++// arquivo e abre o jogo de novo com as escolhas novas. RX_VK_DECKPORT_MENU=0 volta ao menu do Hookshot.
++#pragma once
++
++namespace dp {
++
++bool on() {
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("RX_VK_DECKPORT_MENU");
++        v = !e || atoi(e) != 0;
++    }
++    return v != 0;
++}
++
++// ---------------------------------------------------------------- o modelo
++struct Choice { const char* label; int v; };
++enum Kind { K_VALUE, K_INFO, K_ACTION };
++enum Action { A_NONE, A_RESTART, A_QUIT };
++struct Item {
++    const char* name;
++    int* value;                      // (nullptr: informação ou ação)
++    std::vector<Choice> ch;
++    const char* help;
++    Kind kind = K_VALUE;
++    bool restart = false;            // (vale ao reiniciar)
++    bool preset = false;             // (faz parte da predefinição: mexer vira Personalizado)
++    const char* (*gain)(int idx) = nullptr;   // (ganho medido no Deck, para o valor escolhido)
++    Action action = A_NONE;
++    const char* info = nullptr;      // (K_INFO: o valor mostrado)
++};
++enum SecType { S_LIST, S_PRESET, S_MAP, S_ABOUT };
++struct Section { const char* name; const char* title; SecType type; std::vector<Item> items; };
++struct Tab { const char* name; std::vector<Section> secs; };
++
++int lang = 0;   // (índice em kLangs: o language.txt ao lado do jogo)
++int lang_start = 0;
++struct Lang { const char* code; const char* name; };
++const Lang kLangs[] = {{"pt-BR", "Português (Brasil)"}, {"en-US", "English (US)"}, {"en-GB", "English (UK)"},
++                       {"es-419", "Español (Latinoamérica)"}, {"es", "Español (España)"}, {"fr", "Français"},
++                       {"fr-CA", "Français (Canada)"}, {"de", "Deutsch"}, {"it", "Italiano"}, {"nl", "Nederlands"},
++                       {"ru", "Russo"}, {"ja", "Japonês"}, {"ko", "Coreano"}, {"zh-Hans", "Chinês simplificado"}, {"zh-Hant", "Chinês tradicional"}};
++// (os nomes em escrita não latina ficam em português: a fonte do menu só tem o alfabeto latino)
++constexpr int kLangN = sizeof kLangs / sizeof kLangs[0];
++
++// predefinições: resolução interna (valor do Hookshot), distância, grama, sombras, texturas
++const char* const kPresets[] = {"Qualidade", "Equilibrado", "Desempenho", "Bateria", "Personalizado"};
++const int kPresetVals[4][5] = {{1, 4, 2, 0, 0}, {2, 2, 0, 1, 1}, {3, 1, 0, 2, 1}, {4, 0, 0, 2, 1}};
++int* preset_fields[5] = {&opts.resolution, &opts.dp_distance, &opts.dp_grass, &opts.dp_shadows, &opts.dp_textures};
++
++const char* g_preset(int i) { return i == 1 ? "Medido no castelo: 19 a 20 fps, 6,5 GB livres" : nullptr; }
++const char* g_shadows(int i) { return i == 1 ? "Medido no castelo: 300 MB a menos de memória de vídeo" : nullptr; }
++const char* g_textures(int i) { return i == 1 ? "Medido: 6,2 GB a menos de texturas" : "Medido: 2,9 GB a menos que o original"; }
++const char* g_distance(int i) { return i == 2 ? "Medido na Cidadela: 18,5 para 19,8 fps" : nullptr; }
++
++std::vector<Tab> tabs;
++std::vector<Choice> range(int lo, int hi, int step, const char* fmt) {
++    std::vector<Choice> c;
++    static std::deque<std::string> keep;   // (os textos ficam vivos enquanto o menu existir; deque: não muda de lugar)
++    for (int v = lo; v <= hi; v += step) {
++        char b[32];
++        snprintf(b, sizeof b, fmt, v);
++        keep.emplace_back(b);
++    }
++    size_t at = keep.size() - (size_t)((hi - lo) / step + 1);
++    for (int v = lo; v <= hi; v += step) c.push_back({keep[at++].c_str(), v});
++    return c;
++}
++
++void build() {
++    if (!tabs.empty()) return;
++    const std::vector<Choice> onoff = {{"Desligado", 0}, {"Ligado", 1}};
++    const std::vector<Choice> noyes = {{"Não", 0}, {"Sim", 1}};
++    std::vector<Choice> langs;
++    for (int i = 0; i < kLangN; i++) langs.push_back({kLangs[i].name, i});
++
++    Item preset{"Predefinição", &opts.dp_preset, {{"Qualidade", 0}, {"Equilibrado", 1}, {"Desempenho", 2}, {"Bateria", 3}},
++                "Ajusta de uma vez a resolução e o mundo. Equilibrado é o padrão do port."};
++    preset.gain = g_preset;
++    Item res{"Resolução interna", &opts.resolution, {{"100% (800p)", 1}, {"75% (600p)", 2}, {"67% (536p)", 3}, {"50% (400p)", 4}},
++             "Tamanho em que o mundo 3D é desenhado antes de ir para a tela. A interface continua nítida."};
++    res.preset = true;
++    Item sharp{"Nitidez", &opts.sharpness, range(0, 100, 10, "%d%%"),
++               "Realce de contorno depois da ampliação. Use mais quando a resolução interna estiver baixa."};
++    Item dist{"Distância de desenho", &opts.dp_distance, {{"Perto", 0}, {"Curta", 1}, {"Média", 2}, {"Longa", 3}, {"Original", 4}},
++              "Até onde a vegetação e os detalhes aparecem. Quanto mais perto, mais leve."};
++    dist.preset = dist.restart = true, dist.gain = g_distance;
++    Item grass{"Densidade da grama", &opts.dp_grass, {{"Baixa (50%)", 0}, {"Média (75%)", 1}, {"Original", 2}},
++               "Quantos tufos de grama o jogo planta por área. Hyrule Field é onde mais pesa."};
++    grass.preset = grass.restart = true;
++    Item shadows{"Sombras", &opts.dp_shadows, {{"Original", 0}, {"Média", 1}, {"Baixa", 2}},
++                 "Tamanho do mapa de sombra do sol. Na Média as sombras ficam quase iguais e mais leves."};
++    shadows.preset = shadows.restart = true, shadows.gain = g_shadows;
++    Item tex{"Texturas", &opts.dp_textures, {{"Altas (1024)", 0}, {"Médias (512)", 1}},
++             "Com Médias o castelo carregou e a Cidadela rodou inteira sem fechar. Altas pode faltar memória."};
++    tex.preset = tex.restart = true, tex.gain = g_textures;
++    Item fps{"Mostrar fps", &opts.show_fps, onoff, "Contador no canto superior direito. Vale na hora."};
++    Item speed{"Velocidade do jogo", &opts.realtime, {{"Por quadro", 0}, {"Tempo real", 1}},
++               "Abaixo de 30 fps: Tempo real mantém a velocidade do jogo; Por quadro deixa tudo mais lento junto."};
++    Item text{"Idioma do jogo", &lang, langs, "Idioma dos textos, legendas e vozes do jogo."};
++    text.restart = true;
++    Item tspeed{"Velocidade do texto", &opts.text_speed, {{"Normal", 0}, {"2x", 1}, {"4x", 2}, {"Instantânea", 3}},
++                "Quão rápido as falas aparecem na caixa de diálogo."};
++    Item mic{"Microfone", &opts.mic, {{"Desligado", 0}, {"Padrão do sistema", 1}},
++             "O que a ocarina ouve quando a opção de microfone do jogo está ligada."};
++    Item screen{"Resolução da tela", nullptr, {}, "O Deck sempre mostra 1280 x 800, em 16:10, sem barras pretas.", K_INFO};
++    screen.info = "1280 x 800";
++    Item gyro{"Mirar com giroscópio", &opts.gyro, onoff,
++              "Mexer o Deck move a mira do estilingue, do arco e do gancho, como no Switch."};
++    Item gsx{"Sensibilidade horizontal", &opts.gyro_sens_x, range(50, 300, 25, "%d%%"), "Quanto a mira anda para os lados."};
++    Item gsy{"Sensibilidade vertical", &opts.gyro_sens_y, range(50, 300, 25, "%d%%"), "Quanto a mira anda para cima e para baixo."};
++    Item gix{"Inverter horizontal", &opts.gyro_inv_x, noyes, "Troca esquerda e direita da mira."};
++    Item giy{"Inverter vertical", &opts.gyro_inv_y, noyes, "Troca cima e baixo da mira."};
++    Item rum{"Vibração", &opts.rumble, {{"Desligada", 0}, {"25%", 25}, {"50%", 50}, {"75%", 75}, {"100%", 100}, {"125%", 125}, {"150%", 150}},
++             "Força da vibração, em relação à do jogo."};
++    Item dz{"Zona morta do analógico", &opts.stick_dead_zone, {{"Padrão", 0}, {"5%", 1}, {"10%", 2}, {"15%", 3}, {"20%", 4}, {"30%", 5}},
++            "Quanto o analógico precisa sair do centro para contar. Aumente se o Link andar sozinho."};
++    Item cx{"Inverter câmera horizontal", &opts.invert_cam_x, noyes, "Troca esquerda e direita ao girar a câmera."};
++    Item cy{"Inverter câmera vertical", &opts.invert_cam_y, noyes, "Troca cima e baixo ao girar a câmera."};
++    Item prompts{"Ícones de botão", &opts.prompts, {{"Automático", 0}, {"Steam Deck", 5}, {"Switch", 1}, {"Xbox", 2}, {"PlayStation 5", 4}},
++                 "Os ícones de botão que o jogo mostra nos textos e menus."};
++    prompts.restart = true;
++    Item restart{"Reiniciar o jogo", nullptr, {}, "Fecha e abre o jogo de novo. Salve antes: aperte A duas vezes.", K_ACTION};
++    restart.action = A_RESTART;
++    Item quit{"Sair do jogo", nullptr, {}, "Volta para o Steam. Salve antes: aperte A duas vezes.", K_ACTION};
++    quit.action = A_QUIT;
++
++    tabs = {
++        {"Gráficos", {{"Predefinição", "Predefinição", S_PRESET, {preset}},
++                      {"Imagem", "Imagem", S_LIST, {screen, res, sharp}},
++                      {"Mundo", "Mundo", S_LIST, {dist, grass, shadows, tex}},
++                      {"Quadros", "Quadros por segundo", S_LIST, {fps, speed}}}},
++        {"Jogo", {{"Idioma", "Idioma", S_LIST, {text, tspeed}}, {"Som", "Som", S_LIST, {mic}}}},
++        {"Controle", {{"Botões", "Botões no Deck", S_MAP, {}},
++                      {"Giroscópio", "Giroscópio", S_LIST, {gyro, gsx, gsy, gix, giy}},
++                      {"Ajustes", "Ajustes", S_LIST, {rum, dz, cx, cy, prompts}}}},
++        {"Sobre", {{"Deckport", "Sobre o port", S_ABOUT, {}}, {"Sistema", "Sistema", S_LIST, {restart, quit}}}},
++    };
++}
++
++// ---------------------------------------------------------------- o estado
++int tab = 0, zone = 0;          // (zone 0: a coluna das seções; 1: as linhas do pergaminho)
++int sec[4] = {}, row[4] = {};
++const Item* armed = nullptr;    // (Reiniciar ou Sair esperando a segunda vez)
++bool msg_restarting = false;
++int start_vals[8];              // (o que esta abertura usa: distância, grama, sombras, texturas, ícones)
++int* restart_fields[] = {&opts.dp_distance, &opts.dp_grass, &opts.dp_shadows, &opts.dp_textures, &opts.prompts};
++constexpr int kRestartFields = 5;
++
++std::string game_dir() {
++    const std::string p = ini_path();
++    return p.substr(0, p.find_last_of("\\/") + 1);
++}
++void lang_read() {
++    lang = 0;
++    if (FILE* f = fopen((game_dir() + "language.txt").c_str(), "r")) {
++        char line[128];
++        while (fgets(line, sizeof line, f)) {
++            char* s = line;
++            while (*s == ' ' || *s == '\t') s++;
++            if (*s == '#' || *s == '\n' || *s == '\r' || !*s) continue;
++            size_t n = strcspn(s, " \t\r\n");
++            for (int i = 0; i < kLangN; i++)
++                if (strlen(kLangs[i].code) == n && !strncmp(s, kLangs[i].code, n)) lang = i;
++            break;
++        }
++        fclose(f);
++    }
++}
++void lang_write() {
++    const std::string path = game_dir() + "language.txt";
++    std::string out;
++    bool done = false;
++    if (FILE* f = fopen(path.c_str(), "r")) {
++        char line[256];
++        while (fgets(line, sizeof line, f)) {
++            const char* s = line;
++            while (*s == ' ' || *s == '\t') s++;
++            const bool code = *s && *s != '#' && *s != '\n' && *s != '\r';
++            if (code && !done) out += std::string(kLangs[lang].code) + "\n", done = true;
++            else if (!code) out += line;
++        }
++        fclose(f);
++    }
++    if (!done) out = std::string("# The game's language.\n\n") + kLangs[lang].code + "\n";
++    if (FILE* f = fopen(path.c_str(), "w")) fputs(out.c_str(), f), fclose(f);
++}
++bool started = false;
++void start() {
++    if (started) return;
++    started = true;
++    build();
++    lang_read();
++    lang_start = lang;
++    for (int i = 0; i < kRestartFields; i++) start_vals[i] = *restart_fields[i];
++}
++std::vector<std::string> pending_names() {
++    std::vector<std::string> v;
++    static const char* names[] = {"Distância", "Grama", "Sombras", "Texturas", "Ícones de botão"};
++    for (int i = 0; i < kRestartFields; i++)
++        if (*restart_fields[i] != start_vals[i]) v.push_back(names[i]);
++    if (lang != lang_start) v.push_back("Idioma");
++    return v;
++}
++
++int choice_index(const Item& it) {
++    if (!it.value || it.ch.empty()) return 0;
++    int best = 0, dist = 1 << 30;
++    for (size_t i = 0; i < it.ch.size(); i++) {
++        const int d = std::abs(it.ch[i].v - *it.value);
++        if (d < dist) dist = d, best = (int)i;
++    }
++    return best;
++}
++bool fixed(const Item& it) { return it.kind != K_VALUE || (it.value == &opts.resolution && row_fixed(&opts.resolution)); }
++void preset_apply(int p) {
++    if (p < 0 || p > 3) return;
++    for (int i = 0; i < 5; i++) *preset_fields[i] = kPresetVals[p][i];
++}
++void preset_check() {
++    const int p = opts.dp_preset;
++    if (p < 0 || p > 3) return;
++    for (int i = 0; i < 5; i++)
++        if (*preset_fields[i] != kPresetVals[p][i]) { opts.dp_preset = 4; return; }
++}
++void quiet_restart_ask() {   // (o Hookshot não pergunta ao fechar: aqui é o Y que aplica)
++    int now[mr::kMax];
++    restart_values(now);
++    restart_state.note(now);
++    restart_state.choose_later(now);
++}
++void set(const Item& it, int dir) {
++    if (fixed(it) || it.ch.empty()) return;
++    const int i = choice_index(it), n = (int)it.ch.size();
++    const int ni = std::min(std::max(i + dir, 0), n - 1);
++    if (ni == i && *it.value == it.ch[i].v) return;
++    *it.value = it.ch[ni].v;
++    if (it.value == &opts.dp_preset) preset_apply(*it.value);
++    else if (it.preset) preset_check();
++    if (it.value == &lang) lang_write();
++    if (it.value == &opts.mic && can_mic()) mic_chosen();
++    quiet_restart_ask();
++    save();
++}
++
++// ---------------------------------------------------------------- o desenho
++uint32_t W = 1280, H = 800;
++float K = 1.0f;
++int S(float v) { return (int)lroundf(v * K); }
++inline uint32_t rgb(int r, int g, int b) { return (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b; }
++inline uint32_t mix(uint32_t a, uint32_t b, float t) {
++    t = std::min(std::max(t, 0.0f), 1.0f);
++    auto c = [&](int sh) { return (uint32_t)lroundf(((a >> sh) & 255) * (1 - t) + ((b >> sh) & 255) * t) << sh; };
++    return c(16) | c(8) | c(0);
++}
++ImDrawList* DL = nullptr;
++ui::Fonts FN{};
++inline ImU32 col(uint32_t c, float a = 1) {
++    return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)lroundf(std::min(std::max(a, 0.0f), 1.0f) * 255));
++}
++void box(int x, int y, int w, int h, uint32_t c, float a = 1) {
++    if (w > 0 && h > 0) DL->AddRectFilled(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), col(c, a));
++}
++void vgrad(int x, int y, int w, int h, uint32_t c0, uint32_t c1) {
++    const ImU32 a = col(c0), b = col(c1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), a, a, b, b);
++}
++void hfade(int x, int y, int w, int h, uint32_t c, float a0, float a1) {   // (faixa que esmaece da esquerda para a direita)
++    const ImU32 l = col(c, a0), r = col(c, a1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), l, r, r, l);
++}
++void vfade(int x, int y, int w, int h, uint32_t c, float a0, float a1) {   // (de cima para baixo)
++    const ImU32 t = col(c, a0), b = col(c, a1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), t, t, b, b);
++}
++void frame(int x, int y, int w, int h, uint32_t c, int t = 1, float a = 1) {
++    box(x, y, w, t, c, a), box(x, y + h - t, w, t, c, a), box(x, y + t, t, h - 2 * t, c, a), box(x + w - t, y + t, t, h - 2 * t, c, a);
++}
++void glow(int x, int y, int w, int h) {   // (o contorno branco com brilho do item em foco, como no jogo)
++    for (int i = 6; i >= 1; i--) frame(x - S(3) - i, y - S(3) - i, w + 2 * (S(3) + i), h + 2 * (S(3) + i), 0xffffff, 1, 0.07f * (7 - i));
++    frame(x - S(3), y - S(3), w + 2 * S(3), h + 2 * S(3), 0xffffff, std::max(2, S(3)));
++}
++void disc(float cx, float cy, float r, uint32_t c, float a = 1) { DL->AddCircleFilled(ImVec2(cx, cy), r, col(c, a), 24); }
++void rrect(int x, int y, int w, int h, int r, uint32_t c, float a = 1) {
++    DL->AddRectFilled(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), col(c, a), (float)r);
++}
++ImFont* face(bool bold) { return bold ? FN.strong : FN.body; }
++int text_w(const char* s, float px, bool bold) { return (int)ceilf(ui::size_of(face(bold), (float)S(px), s).x); }
++// (texto com o topo em y; align: 0 esquerda, 1 centro, 2 direita; sombra opcional)
++void text(int x, int y, const char* s, float px, bool bold, uint32_t c, int align = 0, bool shadow = false) {
++    const float size = (float)S(px);
++    const float w = align ? ui::size_of(face(bold), size, s).x : 0;
++    const float tx = align == 1 ? x - w * 0.5f : align == 2 ? x - w : (float)x;
++    if (shadow) DL->AddText(face(bold), size, ImVec2(tx, (float)y + std::max(1, S(1))), col(0, 0.75f), s);
++    DL->AddText(face(bold), size, ImVec2(tx, (float)y), col(c), s);
++}
++int wrap(int x, int y, int width, const char* s, float px, bool bold, uint32_t c, float lh = 1.35f) {
++    const float size = (float)S(px);
++    DL->AddText(face(bold), size, ImVec2((float)x, (float)y), col(c), s, nullptr, (float)width);
++    return (int)ceilf(face(bold)->CalcTextSizeA(size, FLT_MAX, (float)width, s).y);
++}
++// glifo do Deck: círculo claro com a letra (A, B, X, Y, L, R, ≡) ou retângulo (L1, R1, L2, L4...)
++int glyph(int x, int cy, const char* t, bool rect = false) {
++    const uint32_t bg = rgb(243, 238, 228), fg = rgb(43, 33, 22);
++    if (!rect) {
++        const float r = K * 12;
++        disc(x + r, (float)cy, r, bg);
++        if (!strcmp(t, "=")) {   // (o botão Menu do Deck: três traços)
++            for (int i = -1; i <= 1; i++) box((int)(x + r) - S(6), cy + i * S(4) - std::max(1, S(1)), S(12), std::max(2, S(2)), fg);
++        } else {
++            text((int)(x + r), cy - S(9), t, 14, true, fg, 1);
++        }
++        return (int)(2 * r);
++    }
++    const int w = text_w(t, 12, true) + S(10), h = S(20);
++    rrect(x, cy - h / 2, w, h, S(4), bg);
++    text(x + w / 2, cy - S(8), t, 12, true, fg, 1);
++    return w;
++}
++
++// as áreas clicáveis desta pintura (o toque e o mouse: hit)
++struct Rect { int x, y, w, h; };
++Rect r_tabs[4], r_secs[8], r_rows[12], r_y, r_b, r_a;
++int n_secs = 0, n_rows = 0;
++bool in(const Rect& r, int x, int y) { return r.w > 0 && x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h; }
++
++const uint32_t C_NIGHT = rgb(10, 6, 4), C_IVORY = rgb(246, 239, 224), C_INK = rgb(59, 40, 16), C_INK2 = rgb(90, 63, 23),
++               C_GOLD = rgb(216, 166, 50), C_CREAM = rgb(240, 220, 174);
++
++void paint_bar() {
++    // faixa de couro com a borda de baixo recortada (colunas de 4 px)
++    for (int x = 0; x < (int)W; x += 4) {
++        const float fx = (float)x / K;
++        const float edge = 74 + 6 * sinf(fx * 0.011f) + 3 * sinf(fx * 0.037f + 1.3f) + (fx < 90 || fx > 1190 ? 10 : 0);
++        const int e = S(edge);
++        vgrad(x, 0, 4, e, rgb(138, 108, 67), rgb(109, 82, 50));
++        box(x, e, 4, S(3), rgb(40, 26, 12), 0.8f);
++    }
++    // espirais nas pontas
++    for (int side = 0; side < 2; side++) {
++        const float cx = side ? W - K * 22 : K * 22, cy = K * 92;
++        for (float t = 0; t < 10.5f; t += 0.02f) {
++            const float r = K * (2 + t * 1.1f);
++            disc(cx + (side ? -1 : 1) * r * cosf(t), cy + r * sinf(t), K * 1.3f, rgb(200, 169, 110));
++        }
++    }
++    text(S(30), S(14), "Deckport", 24, true, C_IVORY, 0, true);
++    text(S(31), S(42), "STEAM DECK", 11, true, C_CREAM);
++    // abas
++    const int tw = S(150), total = tw * (int)tabs.size(), x0 = ((int)W - total) / 2;
++    glyph(x0 - S(46), S(33), "L1", true);
++    glyph(x0 + total + S(16), S(33), "R1", true);
++    for (int i = 0; i < (int)tabs.size(); i++) {
++        const int x = x0 + i * tw;
++        if (i == tab) vgrad(x, 0, tw, S(66), rgb(95, 65, 37), rgb(75, 49, 26)), box(x, S(64), tw, S(2), rgb(42, 26, 12));
++        text(x + tw / 2, S(19), tabs[i].name, 21, true, C_IVORY, 1, true);
++        r_tabs[i] = {x, 0, tw, S(66)};
++    }
++    // canto direito: a predefinição em uso
++    text((int)W - S(28), S(16), kPresets[std::min(std::max(opts.dp_preset, 0), 4)], 19, true, C_IVORY, 2, true);
++    text((int)W - S(28), S(42), "predefinição", 13, false, C_CREAM, 2);
++}
++
++void paint_column() {
++    const Tab& t = tabs[tab];
++    const int x = S(38), y = S(122), w = S(318), h = (int)H - S(122) - S(74);
++    vgrad(x, y, w, h, rgb(51, 38, 26), rgb(36, 26, 18));
++    frame(x, y, w, h, rgb(74, 55, 36));
++    frame(x + S(10), y + S(10), w - S(20), h - S(20), 0xffffff, 1, 0.06f);
++    n_secs = (int)t.secs.size();
++    int by = S(160);
++    for (int i = 0; i < n_secs; i++) {
++        if (i == 1 && n_secs > 2) {   // (ornamento entre o primeiro e os outros, como Load / Options no jogo)
++            const int oy = by - S(2);
++            hfade(S(90), oy, S(70), std::max(1, S(1)), rgb(140, 115, 80), 0, 1);
++            hfade(S(240), oy, S(70), std::max(1, S(1)), rgb(140, 115, 80), 1, 0);
++            text(S(200), oy - S(11), "~", 18, true, rgb(140, 115, 80), 1);
++            by += S(20);
++        }
++        const int bx = S(84), bw = S(226), bh = S(48);
++        const bool open = i == sec[tab];
++        vgrad(bx, by, bw, bh, open ? rgb(154, 118, 70) : rgb(128, 97, 58), open ? rgb(130, 99, 58) : rgb(108, 81, 48));
++        frame(bx, by, bw, bh, rgb(42, 28, 14));
++        frame(bx + S(5), by + S(5), bw - S(10), bh - S(10), rgb(168, 139, 90), 1, 0.9f);
++        text(bx + bw / 2, by + S(11), t.secs[i].name, 21, false, C_IVORY, 1, true);
++        if (zone == 0 && open) glow(bx, by, bw, bh);
++        r_secs[i] = {bx, by, bw, bh};
++        by += bh + S(16);
++    }
++}
++
++void paint_parchment_bg(int x, int y, int w, int h) {
++    box(x, y, w, h, rgb(184, 150, 92));
++    const uint32_t dark = rgb(120, 88, 42);
++    const int bw = w / 3, bh = h / 3;
++    hfade(x, y, bw, h, dark, 0.75f, 0), hfade(x + w - bw, y, bw, h, dark, 0, 0.75f);
++    vfade(x, y, w, bh, dark, 0.6f, 0), vfade(x, y + h - bh, w, bh, dark, 0, 0.7f);
++    for (int k = 0; k < h; k += 7) box(x, y + k, w, 1, 0xffffff, 0.025f);   // (fibras do papel)
++    frame(x, y, w, h, rgb(75, 50, 20));
++}
++
++void paint_title(int cx, int y, const char* s) {
++    text(cx, y, s, 30, true, rgb(58, 39, 9), 1);
++    const int tw = text_w(s, 30, true);
++    for (int side = -1; side <= 1; side += 2) {   // (o ornamento de cada lado: traço e voluta)
++        const int ox = cx + side * (tw / 2 + S(14));
++        const int lx = side < 0 ? ox - S(40) : ox;
++        box(lx, y + S(19), S(26), std::max(2, S(2)), rgb(58, 39, 9));
++        const float vx = side < 0 ? ox - S(40) - S(2) : ox + S(30);
++        for (float t = 0; t < 8.0f; t += 0.03f) {
++            const float r = K * (1.5f + t * 0.7f);
++            disc(vx + side * r * cosf(t), y + S(19) + r * sinf(t), K * 1.0f, rgb(58, 39, 9));
++        }
++    }
++}
++
++void paint_row(int x, int y, int w, const Item& it, bool focus) {
++    const int h = S(46);
++    if (focus) hfade(x, y, w, h, rgb(127, 97, 47), 1, 0.95f);
++    else hfade(x, y, w, h, rgb(110, 84, 40), 0.85f, 0.0f);
++    text(x + S(18), y + S(11), it.name, 19, false, C_IVORY, 0, true);
++    int nx = x + S(18) + text_w(it.name, 19, false) + S(10);
++    if (it.restart) {   // (selo "ao reiniciar")
++        const int bw = text_w("ao reiniciar", 12, true) + S(10);
++        box(nx, y + S(14), bw, S(18), rgb(230, 196, 109));
++        text(nx + bw / 2, y + S(15), "ao reiniciar", 12, true, rgb(43, 28, 5), 1);
++    }
++    const uint32_t ink = focus ? C_IVORY : C_INK;
++    const int right = x + w - S(14);
++    if (it.kind == K_ACTION) {
++        const bool arm = armed == &it;
++        text(right, y + S(11), arm ? "Aperte A de novo" : "A", 19, true, arm ? C_GOLD : ink, 2);
++        return;
++    }
++    const char* val = it.kind == K_INFO ? it.info : it.ch.empty() ? "" : it.ch[choice_index(it)].label;
++    if (it.value == &opts.dp_preset && opts.dp_preset == 4) val = "Personalizado";
++    const int vw = S(210), vx = right - vw;
++    text(vx + vw / 2, y + S(11), val, 19, true, ink, 1);
++    if (!fixed(it)) {   // (setas)
++        const float a = focus ? 1.0f : 0.35f;
++        const int ay = y + h / 2;
++        for (int i = 0; i < S(10); i++) {
++            box(vx + i, ay - i * 7 / 10, 1, 2 * (i * 7 / 10) + 1, ink, a);
++            box(right - i, ay - i * 7 / 10, 1, 2 * (i * 7 / 10) + 1, ink, a);
++        }
++    }
++}
++
++void paint_hint(int x, int y, int w, const Item* it) {
++    box(x, y, w, std::max(1, S(1)), C_INK2, 0.35f);
++    if (!it) return;
++    wrap(x, y + S(14), w - S(260), it->help, 17, false, rgb(58, 39, 9));
++    if (it->gain && it->value) {
++        const char* g = it->gain(choice_index(*it));
++        if (g) {
++            const int gw = S(230), gx = x + w - gw;
++            box(gx, y + S(14), gw, S(58), rgb(79, 58, 28));
++            text(gx + gw - S(10), y + S(20), "GANHO MEDIDO NO DECK", 11, true, rgb(233, 214, 166), 2);
++            wrap(gx + S(10), y + S(38), gw - S(20), g, 14, true, C_IVORY, 1.2f);
++        }
++    }
++}
++
++void paint_preset_table(int x, int y, int w) {
++    static const char* labels[5] = {"Resolução interna", "Distância", "Grama", "Sombras", "Texturas"};
++    static const char* vals[5][4] = {{"100%", "75%", "67%", "50%"}, {"Original", "Média", "Curta", "Perto"},
++                                     {"Original", "Baixa", "Baixa", "Baixa"}, {"Original", "Média", "Baixa", "Baixa"},
++                                     {"Altas", "Médias", "Médias", "Médias"}};
++    const int c0 = S(200), cw = (w - c0) / 4, rh = S(30);
++    const int act = opts.dp_preset;
++    if (act >= 0 && act < 4) box(x + c0 + act * cw, y, cw, rh * 6, 0xffffff, 0.16f);
++    for (int c = 0; c < 4; c++) text(x + c0 + c * cw + cw / 2, y + S(6), kPresets[c], 15, true, rgb(58, 39, 9), 1);
++    for (int r = 0; r < 5; r++) {
++        const int ry = y + rh * (r + 1);
++        box(x, ry, w, std::max(1, S(1)), C_INK2, 0.2f);
++        text(x, ry + S(6), labels[r], 16, true, rgb(58, 39, 9));
++        for (int c = 0; c < 4; c++) text(x + c0 + c * cw + cw / 2, ry + S(6), vals[r][c], 16, c == act, rgb(58, 39, 9), 1);
++    }
++}
++
++void paint_map(int x, int y, int w) {
++    // o Deck, simplificado, no centro
++    const int dw = S(380), dh = S(140), dx = x + (w - dw) / 2, dy = y + S(30);
++    rrect(dx + S(30), dy - S(14), S(56), S(22), S(8), rgb(42, 32, 22));
++    rrect(dx + dw - S(86), dy - S(14), S(56), S(22), S(8), rgb(42, 32, 22));
++    rrect(dx, dy, dw, dh, S(52), rgb(30, 23, 18));
++    rrect(dx + S(108), dy + S(12), S(164), S(104), S(6), rgb(13, 10, 8));
++    box(dx + S(116), dy + S(20), S(148), S(88), rgb(42, 32, 22));
++    disc(dx + K * 52, dy + K * 38, K * 15, rgb(43, 33, 22)), disc(dx + K * 52, dy + K * 38, K * 11, rgb(70, 55, 38));
++    box(dx + S(42), dy + S(66), S(10), S(30), rgb(70, 55, 38)), box(dx + S(32), dy + S(76), S(30), S(10), rgb(70, 55, 38));
++    disc(dx + dw - K * 52, dy + K * 98, K * 15, rgb(43, 33, 22)), disc(dx + dw - K * 52, dy + K * 98, K * 11, rgb(70, 55, 38));
++    const float bx = dx + dw - K * 52, by = dy + K * 46;
++    const char* f[4] = {"Y", "X", "B", "A"};
++    const float off[4][2] = {{0, -16}, {-16, 0}, {16, 0}, {0, 16}};
++    for (int i = 0; i < 4; i++) {
++        disc(bx + K * off[i][0], by + K * off[i][1], K * 8.5f, rgb(43, 33, 22));
++        text((int)(bx + K * off[i][0]), (int)(by + K * off[i][1]) - S(7), f[i], 11, true, rgb(233, 220, 192), 1);
++    }
++    // rótulos dos dois lados, como os do "Basic Controls" do jogo
++    auto lab = [&](bool right, int ly, const char* g, bool rect, const char* t) {
++        const int lw = S(176), lx = right ? x + w - lw : x;
++        if (right) hfade(lx, ly, lw, S(32), rgb(110, 84, 40), 0.0f, 0.85f);
++        else hfade(lx, ly, lw, S(32), rgb(110, 84, 40), 0.85f, 0.0f);
++        if (right) {
++            const int gw = glyph(lx + S(10), ly + S(16), g, rect);
++            text(lx + S(18) + gw, ly + S(5), t, 17, false, C_IVORY, 0, true);
++        } else {
++            const int tw = text_w(t, 17, false);
++            text(lx + S(10), ly + S(5), t, 17, false, C_IVORY, 0, true);
++            glyph(lx + S(18) + tw, ly + S(16), g, rect);
++        }
++    };
++    lab(false, y + S(20), "L2", true, "Mirar");
++    lab(false, y + S(64), "L", false, "Mover");
++    lab(false, y + S(108), "R2", true, "Usar o item");
++    lab(false, y + S(152), "L1", true, "Trocar de aba");
++    lab(true, y + S(20), "=", false, "Abrir o menu");
++    lab(true, y + S(64), "B", false, "Ações e correr");
++    lab(true, y + S(108), "A", false, "Guardar");
++    lab(true, y + S(152), "Y", false, "Pular");
++    lab(true, y + S(196), "R", false, "Câmera");
++}
++
++void paint_about(int x, int y, int w) {
++    const int col = w / 2 - S(12);
++    text(x, y + S(10), "Deckport", 40, true, rgb(58, 39, 9));
++    text(x, y + S(58), "STEAMDECK VERSION", 14, true, C_INK2);
++    wrap(x, y + S(96), col, "The Legend of Zelda: Ocarina of Time, versão de Switch 2, rodando nativo no Steam Deck.", 17, false, rgb(58, 39, 9));
++    wrap(x, y + S(170), col, "Motor Deckport 2.1.0, feito a partir do Hookshot.", 17, false, rgb(58, 39, 9));
++    const int rx = x + w / 2 + S(12);
++    int ry = y + S(10);
++    auto block = [&](const char* h, const char* body) {
++        text(rx, ry, h, 14, true, C_INK2);
++        ry += S(22);
++        ry += wrap(rx, ry, col, body, 17, false, rgb(58, 39, 9)) + S(14);
++    };
++    block("PORT PARA STEAM DECK", "Kewin Lima");
++    block("MOTOR BASE", "Hookshot (NotRexed e colaboradores), licença GPL-3.0. O código do motor e das nossas mudanças acompanha o port.");
++    block("JOGO", "Nintendo. Você precisa da sua própria cópia do jogo.");
++}
++
++void paint_footer() {
++    const int y = (int)H - S(58), cy = y + S(29);
++    hfade((int)(W * 0.35f), y, (int)W - (int)(W * 0.35f), (int)H - y, 0, 0, 0.6f);
++    int x = (int)W - S(34);
++    auto hint = [&](const char* label, const char* g, bool rect, uint32_t c, Rect* r) {
++        const int gw = rect ? text_w(g, 12, true) + S(10) : S(24);
++        x -= gw;
++        glyph(x, cy, g, rect);
++        const int lw = text_w(label, 20, false);
++        x -= S(9) + lw;
++        text(x, cy - S(13), label, 20, false, c, 0, true);
++        if (r) *r = {x, y, lw + S(9) + gw, S(58)};
++        x -= S(28);
++    };
++    r_y = r_b = r_a = {0, 0, 0, 0};
++    hint(zone == 1 ? "Voltar" : "Fechar", "B", false, C_IVORY, &r_b);
++    const Section& s = tabs[tab].secs[sec[tab]];
++    if (zone == 0 && !s.items.empty()) hint("Selecionar", "A", false, C_IVORY, &r_a);
++    if (zone == 1) hint("Mudar", "<  >", true, C_IVORY, nullptr);
++    if (!pending_names().empty()) hint("Aplicar e reiniciar", "Y", false, rgb(246, 215, 125), &r_y);
++}
++
++void paint(ui::Ctx& c) {
++    DL = c.d, FN = c.f, W = (uint32_t)c.w, H = (uint32_t)c.h, K = std::min(c.w / 1280.0f, c.h / 800.0f);
++    const uint32_t w = W, h = H;
++    start();
++    box(0, 0, (int)w, (int)h, C_NIGHT);
++    for (int i = 30; i >= 1; i--) disc(w * 0.7f, h * 0.55f, h * 0.025f * i, rgb(52, 32, 16), 0.035f);
++    paint_bar();
++    paint_column();
++    const Tab& t = tabs[tab];
++    const Section& s = t.secs[sec[tab]];
++    const int px = S(398), py = S(150), pw = S(842), ph = (int)h - S(150) - S(112);
++    paint_parchment_bg(px, py, pw, ph);
++    paint_title(px + pw / 2, py + S(22), s.title);
++    const int cx = px + S(40), cy = py + S(84), cw = pw - S(80);
++    n_rows = 0;
++    if (s.type == S_MAP) paint_map(cx, cy, cw);
++    else if (s.type == S_ABOUT) paint_about(cx, cy, cw);
++    else {
++        int ry = cy;
++        for (size_t i = 0; i < s.items.size(); i++) {
++            paint_row(cx, ry, cw, s.items[i], zone == 1 && (int)i == row[tab]);
++            r_rows[i] = {cx, ry, cw, S(46)};
++            ry += S(52);
++        }
++        n_rows = (int)s.items.size();
++        if (s.type == S_PRESET) paint_preset_table(cx, ry + S(6), cw);
++        const Item* hi = s.items.empty() ? nullptr : &s.items[zone == 1 ? row[tab] : 0];
++        paint_hint(cx, py + ph - S(118), cw, hi);
++    }
++    if (s.type == S_MAP)
++        paint_hint(cx, py + ph - S(118), cw, nullptr),
++        wrap(cx, py + ph - S(104), cw, "Mesmas posições do controle do Switch: o botão da direita faz as ações, o de baixo guarda e o de cima pula. Este menu abre com View e Menu juntos.", 17, false, rgb(58, 39, 9));
++    // faixa do reinício pendente
++    const auto pend = pending_names();
++    if (!pend.empty()) {
++        std::string l = pend.size() == 1 ? "1 opção vale ao reiniciar o jogo: " : std::to_string(pend.size()) + " opções valem ao reiniciar o jogo: ";
++        for (size_t i = 0; i < pend.size(); i++) l += (i ? ", " : "") + pend[i];
++        text(px + pw / 2, py + ph + S(10), l.c_str(), 16, false, rgb(246, 215, 125), 1);
++    }
++    paint_footer();
++    if (msg_restarting) {
++        const int mw = S(520), mh = S(110), mx = ((int)w - mw) / 2, my = ((int)h - mh) / 2;
++        box(mx, my, mw, mh, rgb(27, 18, 11), 0.96f);
++        frame(mx, my, mw, mh, rgb(179, 148, 97));
++        text(mx + mw / 2, my + S(26), "Salvando e reiniciando o jogo", 21, true, C_IVORY, 1);
++        text(mx + mw / 2, my + S(62), "Você volta para o ponto em que salvou por último.", 15, false, rgb(185, 178, 162), 1);
++    }
++}
++
++// ---------------------------------------------------------------- a entrada
++void apply_restart() {
++    msg_restarting = true;
++    save();
++    pipeline_cache_save(true);
++    if (FILE* f = fopen((game_dir() + "deckport_reiniciar").c_str(), "w")) fputs("1\n", f), fclose(f);
++    logf("menu (Deckport): aplicar e reiniciar");
++    if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
++}
++
++// press: as teclas do menu_tick (1 cima, 2 baixo, 3 esquerda, 4 direita, 5 B/Esc, 7 A/Enter); y: o Y do controle
++bool tick(bool* press, bool tab_left, bool tab_right, bool y, bool mouse, int mx, int my, uint32_t clicks, bool mine) {
++    start();
++    bool changed = false;
++    // toque e mouse: o que está sob o dedo (as áreas da última pintura)
++    if (mouse && (clicks & HOS_MOUSE_LEFT)) {
++        for (int i = 0; i < (int)tabs.size(); i++)
++            if (in(r_tabs[i], mx, my) && i != tab) tab = i, zone = 0, changed = true;
++        for (int i = 0; i < n_secs; i++)
++            if (in(r_secs[i], mx, my)) sec[tab] = i, row[tab] = 0, zone = 0, changed = true;
++        for (int i = 0; i < n_rows; i++)
++            if (in(r_rows[i], mx, my)) {
++                const bool again = zone == 1 && row[tab] == i;
++                zone = 1, row[tab] = i, changed = true;
++                if (again) {
++                    const Item& it = tabs[tab].secs[sec[tab]].items[i];
++                    if (it.kind == K_ACTION) press[7] = true;
++                    else press[mx < r_rows[i].x + r_rows[i].w * 3 / 4 ? 3 : 4] = true;
++                }
++            }
++        if (in(r_y, mx, my)) y = true;
++        if (in(r_b, mx, my)) press[5] = true;
++        if (in(r_a, mx, my)) press[7] = true;
++    }
++    if (clicks & HOS_MOUSE_RIGHT) press[5] = true;
++    if (tab_left || tab_right) {
++        tab = (tab + (tab_right ? 1 : (int)tabs.size() - 1)) % (int)tabs.size();
++        zone = 0, armed = nullptr, changed = true;
++    }
++    const Section& s = tabs[tab].secs[sec[tab]];
++    if (y && !pending_names().empty() && mine) { apply_restart(); return true; }
++    if (zone == 0) {
++        if (press[1] || press[2]) {
++            const int n = (int)tabs[tab].secs.size();
++            sec[tab] = (sec[tab] + (press[1] ? n - 1 : 1)) % n, row[tab] = 0, changed = true;
++        } else if ((press[7] || press[4]) && !s.items.empty()) {
++            zone = 1, row[tab] = 0, changed = true;
++        } else if (press[5]) {
++            open_now = false, armed = nullptr, changed = true;
++        }
++    } else if (s.items.empty()) {
++        zone = 0, changed = true;
++    } else {
++        const int n = (int)s.items.size();
++        const Item& it = s.items[std::min(row[tab], n - 1)];
++        if (press[1] || press[2]) row[tab] = (row[tab] + (press[1] ? n - 1 : 1)) % n, armed = nullptr, changed = true;
++        else if (press[5]) zone = 0, armed = nullptr, changed = true;
++        else if (it.kind == K_ACTION && press[7] && mine) {
++            if (armed != &it) armed = &it, changed = true;
++            else if (it.action == A_RESTART) {
++                armed = nullptr, msg_restarting = true, changed = true;
++                save();
++                pipeline_cache_save(true);
++                logf("menu (Deckport): reiniciar");
++                if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
++            } else if (it.action == A_QUIT) {
++                armed = nullptr, save();
++                pipeline_cache_save(true);
++                if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
++            }
++        } else if (press[3] || press[4] || press[7]) {
++            set(it, press[3] ? -1 : 1), changed = true;
++        }
++    }
++    return changed;
++}
++
++} // namespace dp
+diff --git a/gpu/vk/vk_deckport_startup.h b/gpu/vk/vk_deckport_startup.h
+new file mode 100644
+index 0000000..242af6d
+--- /dev/null
++++ b/gpu/vk/vk_deckport_startup.h
+@@ -0,0 +1,195 @@
++// (Deckport) A tela de abertura do port, animada, no lugar da tela do Hookshot enquanto os shaders são preparados.
++// Pedido do Kewin: fundo preto, o logo do jogo aparece, um flare passa revelando "STEAMDECK VERSION" e só então
++// entra a barra dos shaders. Depois disso, brilhos discretos no logo e um reflexo correndo na barra.
++// O logo é o assets/hookshot.png da árvore (trocado pelo patch_tela_abertura.py pelo logo do port, 640x478, com
++// "STEAMDECK VERSION" na faixa de baixo: kSv*). Incluído em vk_menu.cpp, dentro do namespace anônimo, antes do
++// draw_startup. RX_VK_DECKPORT_STARTUP=0 volta à tela do Hookshot. RX_VK_DP_STARTUP_T=<segundos> congela a animação
++// num instante (para capturas de teste).
++#pragma once
++
++namespace dp {
++
++bool startup_on() {
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("RX_VK_DECKPORT_STARTUP");
++        v = !e || atoi(e) != 0;
++    }
++    return v != 0;
++}
++
++// (onde "STEAMDECK VERSION" fica no logo, em fração da largura e da altura da imagem)
++constexpr float kSvX0 = 210.0f / 640, kSvY0 = 407.0f / 478, kSvY1 = 441.0f / 478;
++// (a linha do tempo, em segundos desde o primeiro quadro)
++constexpr float kLogo0 = 0.35f, kLogo1 = 1.75f;   // (o logo aparece)
++constexpr float kFl0 = 2.05f, kFl1 = 3.15f;       // (o flare atravessa e revela a faixa)
++constexpr float kFlOut = 0.7f;                    // (o flare some)
++constexpr float kBar0 = 3.3f, kBarIn = 0.6f;      // (a barra entra)
++constexpr float kStartupMin = 4.2f;               // (a tela dura pelo menos isso: vk_main.cpp)
++
++inline float st_clamp(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
++inline float st_out(float x) { x = 1 - st_clamp(x); return 1 - x * x * x; }
++inline float st_smooth(float x) { x = st_clamp(x); return x * x * (3 - 2 * x); }
++inline ImU32 st_col(float a, int r = 255, int g = 255, int b = 255) { return IM_COL32(r, g, b, (int)(st_clamp(a) * 255 + 0.5f)); }
++
++/// Um flare: halo, risco horizontal comprido, risco vertical curto e o miolo. r o raio do halo, a a força (0 a 1)
++void st_flare(ui::Ctx& c, ImVec2 p, float r, float a) {
++    if (a <= 0 || r <= 0) return;
++    ImDrawList* d = c.d;
++    for (int i = 14; i >= 1; i--) d->AddCircleFilled(p, r * i / 14.0f, st_col(a * 0.05f, 255, 232, 180), 48);
++    const ImU32 mid = st_col(a * 0.9f, 255, 246, 222), end = st_col(0, 255, 246, 222);
++    const float L = r * 4.2f, T = std::max(1.0f, r * 0.07f);
++    d->AddRectFilledMultiColor(ImVec2(p.x - L, p.y - T), ImVec2(p.x, p.y + T), end, mid, mid, end);
++    d->AddRectFilledMultiColor(ImVec2(p.x, p.y - T), ImVec2(p.x + L, p.y + T), mid, end, end, mid);
++    const float V = r * 1.3f, W = std::max(1.0f, r * 0.045f);
++    d->AddRectFilledMultiColor(ImVec2(p.x - W, p.y - V), ImVec2(p.x + W, p.y), end, end, mid, mid);
++    d->AddRectFilledMultiColor(ImVec2(p.x - W, p.y), ImVec2(p.x + W, p.y + V), mid, mid, end, end);
++    d->AddCircleFilled(p, r * 0.16f, st_col(a), 24);
++}
++
++/// O logo em pedaços: tudo menos a faixa "STEAMDECK VERSION", e a faixa só até onde o flare já passou (reveal, 0 a 1)
++void st_logo(ui::Ctx& c, ImTextureData* logo, float x0, float top, float lw, float lh, float a, float reveal) {
++    const ImU32 col = st_col(a);
++    auto piece = [&](float ua, float va, float ub, float vb) {
++        c.d->AddImage(logo->GetTexRef(), ImVec2(x0 + lw * ua, top + lh * va), ImVec2(x0 + lw * ub, top + lh * vb), ImVec2(ua, va),
++                      ImVec2(ub, vb), col);
++    };
++    piece(0, 0, 1, kSvY0);
++    piece(0, kSvY0, kSvX0, kSvY1);
++    piece(0, kSvY1, 1, 1);
++    if (reveal > 0) {
++        c.d->PushClipRect(ImVec2(x0, top), ImVec2(x0 + lw * (kSvX0 + (1 - kSvX0) * reveal), top + lh), true);
++        piece(kSvX0, kSvY0, 1, kSvY1);
++        c.d->PopClipRect();
++    }
++}
++
++/// Os textos da tela (vk_progress.h startup_view, em inglês) em português, como o menu do port
++std::string st_pt(std::string t) {
++    static const char* const kMap[][2] = {
++        {"Closing", "Fechando"},
++        {"Keeping what is prepared for the next start", "O que já foi preparado fica guardado para a próxima vez"},
++        {"Starting the game", "Iniciando o jogo"},
++        {"Preparing shaders", "Preparando os shaders"},
++        {"Building pipelines", "Montando os pipelines"},
++        {"Loading pipelines", "Carregando os pipelines"},
++        {"This happens once after an update. Closing the window keeps what is done.",
++         "Isso acontece uma vez depois de cada atualização. Se fechar o jogo, o que já foi feito fica guardado."},
++        {"Reading the game's shaders", "Lendo os shaders do jogo"},
++        {"Reading the pipeline notes", "Lendo as anotações dos pipelines"},
++        {"Loading the shader cache", "Carregando o cache de shaders"},
++        {"a few seconds left", "faltam alguns segundos"},
++    };
++    for (const auto& m : kMap)
++        if (t == m[0]) return m[1];
++    int a = 0, b = 0;
++    char buf[64];
++    if (sscanf(t.c_str(), "STEP %d OF %d", &a, &b) == 2) return snprintf(buf, sizeof buf, "Etapa %d de %d", a, b), buf;
++    if (sscanf(t.c_str(), "about %d s left", &a) == 1 && t.find(" s left") != std::string::npos)
++        return snprintf(buf, sizeof buf, "faltam uns %d s", a), buf;
++    if (sscanf(t.c_str(), "about %d min left", &a) == 1) return snprintf(buf, sizeof buf, "faltam uns %d min", a), buf;
++    if (t.find(" / ") != std::string::npos)   // ("16,300 / 38,809 shaders": o ponto de milhar)
++        for (char& ch : t)
++            if (ch == ',') ch = '.';
++    return t;
++}
++
++/// (teste) RX_VK_DP_STARTUP_T definido: a tela é desenhada mesmo sem janela (capturas RX_VK_SHOT_MENU), com números de exemplo
++bool startup_test() {
++    static const bool on = getenv("RX_VK_DP_STARTUP_T") != nullptr;
++    return on;
++}
++
++void paint_startup(ui::Ctx& c, const StartupView& view, float fade) {
++    using clk = std::chrono::steady_clock;
++    static const clk::time_point t0 = clk::now();
++    static const float forced = getenv("RX_VK_DP_STARTUP_T") ? (float)atof(getenv("RX_VK_DP_STARTUP_T")) : -1.0f;
++    StartupView v = view;
++    if (startup_test() && v.title.empty()) {
++        v.version = "v2.1.0", v.step = "STEP 1 OF 2", v.title = "Preparing shaders", v.pct = "42%", v.fraction = 0.42;
++        v.left = "16,300 / 38,809 shaders", v.right = "about 4 min left", v.hint = "This happens once after an update. Closing the window keeps what is done.";
++    }
++    v.step = st_pt(v.step), v.title = st_pt(v.title), v.left = st_pt(v.left), v.right = st_pt(v.right), v.hint = st_pt(v.hint);
++    const float t = forced >= 0 ? forced : std::chrono::duration<float>(clk::now() - t0).count();
++    const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f, k = s * 0.86f;
++    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), IM_COL32(0, 0, 0, 255));
++
++    // o logo: aparece crescendo de leve para o lugar
++    float aspect = 1;
++    ImTextureData* logo = ui::logo(&aspect);
++    const float lh = 168 * s, lw = lh * aspect, top = h * 0.5f - 180 * s, x0 = cx - lw * 0.5f;
++    const float in = st_out((t - kLogo0) / (kLogo1 - kLogo0));
++    const float reveal = st_smooth((t - kFl0) / (kFl1 - kFl0));
++    if (logo && in > 0) {
++        const float sc = 1.06f - 0.06f * in;
++        st_logo(c, logo, cx - lw * sc * 0.5f, top + lh * 0.5f - lh * sc * 0.5f, lw * sc, lh * sc, in, reveal);
++    } else if (!logo) {
++        ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, top + lh * 0.5f), ui::alpha(ui::rgba(246, 232, 204), in), "DECKPORT", 6 * k);
++    }
++
++    // a barra e os textos, que entram depois do flare (o fundo é preto: um preto por cima faz a entrada)
++    float y = top + lh + 14 * s;
++    const float bar_in = st_clamp((t - kBar0) / kBarIn);
++    if (bar_in > 0) {
++        const std::string credit = "Deckport, feito a partir do Hookshot " + v.version;
++        ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y), ui::kDim, credit.c_str());
++        if (!v.title.empty()) {
++            y += 34 * k;
++            if (!v.step.empty()) {
++                ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, v.step.c_str());
++            }
++            ui::text_centre(c, c.f.heading, 24 * k, ImVec2(cx, y + 20 * k), ui::kInk, v.title.c_str());
++            const float bx0 = cx - 270 * k, bx1 = cx + 270 * k, by = y + 64 * k;
++            float under = by;
++            if (v.fraction >= 0) {
++                const float bh = 26 * k, pad = 4 * k, fx = bx0 + pad + (bx1 - bx0 - 2 * pad) * (float)std::min(v.fraction, 1.0);
++                c.d->AddRectFilled(ImVec2(bx0, by), ImVec2(bx1, by + bh), ui::kCellDark);
++                c.d->AddRect(ImVec2(bx0, by), ImVec2(bx1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
++                if (fx > bx0 + pad) {
++                    ui::gold(c, ImVec2(bx0 + pad, by + pad), ImVec2(fx, by + bh - pad));
++                    // (um reflexo correndo no ouro, da esquerda para a direita)
++                    const float bw = 46 * k, sx = bx0 + (bx1 - bx0 + 2 * bw) * (fmodf(t, 2.4f) / 2.4f) - bw;
++                    const ImU32 hi = st_col(0.38f, 255, 252, 236), no = st_col(0, 255, 252, 236);
++                    c.d->PushClipRect(ImVec2(bx0 + pad, by + pad), ImVec2(fx, by + bh - pad), true);
++                    c.d->AddRectFilledMultiColor(ImVec2(sx - bw, by), ImVec2(sx, by + bh), no, hi, hi, no);
++                    c.d->AddRectFilledMultiColor(ImVec2(sx, by), ImVec2(sx + bw, by + bh), hi, no, no, hi);
++                    c.d->PopClipRect();
++                }
++                const float split = std::max(fx, bx0 + pad);
++                c.d->PushClipRect(ImVec2(bx0, by), ImVec2(split, by + bh), true);
++                ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
++                c.d->PopClipRect();
++                c.d->PushClipRect(ImVec2(split, by), ImVec2(bx1, by + bh), true);
++                ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kInk, v.pct.c_str());
++                c.d->PopClipRect();
++                under = by + bh;
++            }
++            const float px = 16.5f * k;
++            ui::text(c, c.f.body, px, ImVec2(v.fraction >= 0 ? bx0 : cx - ui::size_of(c.f.body, px, v.left.c_str()).x * 0.5f, under + 12 * k),
++                     ui::kSoft, v.left.c_str());
++            if (!v.right.empty())
++                ui::text(c, c.f.body, px, ImVec2(bx1 - ui::size_of(c.f.body, px, v.right.c_str()).x, under + 12 * k), ui::kSoft, v.right.c_str());
++            if (!v.hint.empty()) ui::text_centre(c, c.f.body, 15.5f * k, ImVec2(cx, by + 92 * k), ui::kDim, v.hint.c_str());
++        }
++        if (bar_in < 1) c.d->AddRectFilled(ImVec2(0, top + lh + 6 * s), ImVec2(w, h), st_col(1 - bar_in, 0, 0, 0));
++    }
++
++    if (logo) {
++        // o flare que revela a faixa: anda junto da borda revelada, e no fim abre e some
++        if (t > kFl0 && t < kFl1 + kFlOut) {
++            const float out = t < kFl1 ? 0 : (t - kFl1) / kFlOut;
++            const float a = t < kFl1 ? st_clamp((t - kFl0) / 0.18f) : 1 - out;
++            st_flare(c, ImVec2(x0 + lw * (kSvX0 + (1 - kSvX0) * reveal), top + lh * (kSvY0 + kSvY1) * 0.5f), lh * 0.34f * (1 + 0.6f * out), a);
++        }
++        // depois, brilhos discretos em pontos do logo, cada um no seu ritmo
++        static const float kTw[][2] = {{0.10f, 0.31f}, {0.475f, 0.04f}, {0.92f, 0.45f}, {0.985f, 0.865f}, {0.19f, 0.42f}, {0.60f, 0.33f}};
++        if (t > kStartupMin)
++            for (int i = 0; i < 6; i++) {
++                const float period = 3.4f + 0.9f * i, ph = fmodf(t + i * 1.7f, period);
++                if (ph < 0.9f) st_flare(c, ImVec2(x0 + lw * kTw[i][0], top + lh * kTw[i][1]), lh * 0.06f, sinf(ph / 0.9f * 3.14159f) * 0.85f);
++            }
++    }
++    if (fade > 0) c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), st_col(std::min(fade, 1.0f), 0, 0, 0));
++}
++
++} // namespace dp
+diff --git a/gpu/vk/vk_draw.cpp b/gpu/vk/vk_draw.cpp
+index 9be6bce..0b7f75c 100644
+--- a/gpu/vk/vk_draw.cpp
++++ b/gpu/vk/vk_draw.cpp
+@@ -3420,6 +3420,14 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
+ struct Checkpoint { uint64_t prog; uint64_t frame; uint32_t seq; char kind; };
+ Checkpoint checkpoints[1 << 16];
+ std::atomic<uint32_t> checkpoint_n{0};
++// (Deckport) each marked program's stage codes, for the report (program_code_keys, noted once a program at its first draw)
++std::mutex marker_codes_mu;
++std::unordered_map<uint64_t, std::string> marker_codes;
++std::string marker_codes_of(uint64_t key) {
++    std::lock_guard lk(marker_codes_mu);
++    const auto it = marker_codes.find(key);
++    return it == marker_codes.end() ? std::string() : it->second;
++}
+ 
+ // (VK_AMD_buffer_marker, where the NV checkpoints are missing: marker i's sequence number goes to word 2i when the GPU
+ // reaches it and to word 2i + 1 once all the work before it is done. Host memory, not VRAM: a GPU reset loses VRAM.)
+@@ -3583,8 +3591,9 @@ void buffer_markers_report() {
+     logf("vk: device lost: %u markers set, %u reached; the last whose earlier work all finished: %u", n, reached, last_done);
+     const auto line = [](const char* what, uint32_t s) {
+         const Checkpoint& k = checkpoints[(s - 1) & 0xFFFF];
+-        logf("vk:   %s: marker %u (%s %016llx, frame %llu)", what, s, checkpoint_kind(k.kind), (unsigned long long)k.prog,
+-             (unsigned long long)k.frame);
++        const std::string codes = (k.kind == 'd' || k.kind == 'c' || k.kind == 'i') ? marker_codes_of(k.prog) : std::string();
++        logf("vk:   %s: marker %u (%s %016llx, frame %llu)%s%s", what, s, checkpoint_kind(k.kind), (unsigned long long)k.prog,
++             (unsigned long long)k.frame, codes.empty() ? "" : "; its code:", codes.c_str());
+     };
+     for (uint32_t s = last_done > 6 ? last_done - 6 : 1; last_done && s < last_done; s++) line("finished before", s);
+     // (from the last finished marker to the first reached one whose earlier work did not finish: what the GPU was running)
+@@ -3953,13 +3962,16 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
+                     std::find(footprint.begin(), footprint.end(), cur_program->key) != footprint.end();
+     // the viewport upside down (negative height): NVN's NDC has +y up, Vulkan's down
+     float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
++    // (Deckport, RX_VK_SHADOW_DIV: a pass into a shrunk depth target alone: the game's pixels divided)
++    const int32_t shr = (at.depth && at.depth->shrink > 1 && !at.n) ? (int32_t)at.depth->shrink : 1;
++    if (shr > 1) vx /= (float)shr, vy /= (float)shr, vw /= (float)shr, vh /= (float)shr;
+     if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
+     d.vp = {vx, vy + vh, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f), std::clamp(s.depth_far, 0.0f, 1.0f)};
+     d.sc = {{0, 0}, {at.width, at.height}};
+     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
+-        const int32_t x0 = std::max(0, s.scissor[0]), y0 = std::max(0, s.scissor[1]);
+-        const int32_t x1 = std::min<int32_t>(s.scissor[0] + s.scissor[2], (int32_t)at.width);
+-        const int32_t y1 = std::min<int32_t>(s.scissor[1] + s.scissor[3], (int32_t)at.height);
++        const int32_t x0 = std::max(0, s.scissor[0] / shr), y0 = std::max(0, s.scissor[1] / shr);
++        const int32_t x1 = std::min<int32_t>((s.scissor[0] + s.scissor[2] + shr - 1) / shr, (int32_t)at.width);
++        const int32_t y1 = std::min<int32_t>((s.scissor[1] + s.scissor[3] + shr - 1) / shr, (int32_t)at.height);
+         d.sc = {{x0, y0}, {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)}};
+     }
+     std::memcpy(d.blend, s.blend_color, sizeof d.blend);
+@@ -4376,7 +4388,15 @@ void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool dep
+     }
+     clear_after_draws(cmd);
+     begin_pass(cmd, at);
+-    const VkRect2D rect = clear_rect(s, at.width, at.height);
++    const uint32_t cshr = at.depth->shrink > 1 && !at.n ? at.depth->shrink : 1;   // (Deckport, RX_VK_SHADOW_DIV)
++    VkRect2D rect = clear_rect(s, at.width * cshr, at.height * cshr);
++    if (cshr > 1) {
++        const uint32_t x1 = std::min(at.width, (rect.offset.x + rect.extent.width + cshr - 1) / cshr);
++        const uint32_t y1 = std::min(at.height, (rect.offset.y + rect.extent.height + cshr - 1) / cshr);
++        rect.offset.x /= (int32_t)cshr, rect.offset.y /= (int32_t)cshr;
++        rect.extent.width = x1 > (uint32_t)rect.offset.x ? x1 - rect.offset.x : 0;
++        rect.extent.height = y1 > (uint32_t)rect.offset.y ? y1 - rect.offset.y : 0;
++    }
+     if (!rect.extent.width || !rect.extent.height) return;
+     VkClearAttachment ca{};
+     ca.aspectMask = aspect;
+@@ -6041,6 +6061,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
+         // grid (a culling pass), until the kernel resets it at 10 s, in the Great Deku Tree and Kokiri Forest (issue 817). About
+         // 30 programs use it; RX_VK_SKIP_CODE=2c56dc1006942f74 leaves them out and the Deck plays without the hang, but without
+         // the models they draw too: a workaround, opt-in)
++        if (checkpoints_on()) {   // (Deckport: the codes for the markers' report)
++            std::lock_guard lk(marker_codes_mu);
++            if (marker_codes.find(cp->key) == marker_codes.end()) marker_codes.emplace(cp->key, program_code_keys(s));
++        }
+         static const char* skip_code_list = getenv("RX_VK_SKIP_CODE");
+         if (skip_code_list && *skip_code_list) {
+             static std::mutex memo_mu;
+diff --git a/gpu/vk/vk_main.cpp b/gpu/vk/vk_main.cpp
+index 621405a..ec05c50 100644
+--- a/gpu/vk/vk_main.cpp
++++ b/gpu/vk/vk_main.cpp
+@@ -795,6 +795,10 @@ void prepare_with_screen() {
+     static std::atomic<bool> paint_stop{false};
+     HANDLE painted = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+     std::thread painter([t0, painted] {
++        auto deckport_startup_min = [] {   // (Deckport: a animação de entrada inteira, vk_deckport_startup.h kStartupMin)
++            const char* e = getenv("RX_VK_DECKPORT_STARTUP");
++            return !e || atoi(e) != 0 ? 4.2 : 0.0;
++        };
+         ProgressClock eta;   // (over the whole bar: its units, PrepareBar)
+         PrepareBar bar;
+         double next_log = 10;
+@@ -834,8 +838,8 @@ void prepare_with_screen() {
+                 last_w = w, last_h = h;
+             }
+             if (w && h) present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+-            if (finished || paint_stop.load()) break;
+-            Sleep(33);
++            if ((finished && secs >= deckport_startup_min()) || paint_stop.load()) break;
++            Sleep(16);
+         }
+         // (the end: a fade to black over 0.4 s, so the game's first frame comes out of black, not cut in over the screen; none
+         // after a screen of under 1.5 s, a blink, or when the window is not shown (paint_stop: its presents wait))
+diff --git a/gpu/vk/vk_memory.cpp b/gpu/vk/vk_memory.cpp
+index 9ee94d1..977e6d1 100644
+--- a/gpu/vk/vk_memory.cpp
++++ b/gpu/vk/vk_memory.cpp
+@@ -2648,6 +2648,63 @@ void note_direct_write(Pool& p, uint64_t off, uint64_t size) {   // (pools_mu he
+         wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value);
+ }
+ 
++// (Deckport) RX_VK_BIND_SNAPSHOT_KB: a read binding of a pool with no mirror, up to that many KB, is served from a copy
++// of its bytes as submitted, in the recording's stream (patches/patch_bind_snapshot.py)
++uint64_t bind_snapshot_max() {
++    static const uint64_t n = [] {
++        const char* e = getenv("RX_VK_BIND_SNAPSHOT_KB");
++        const uint64_t kb = e ? (uint64_t)std::max(0, atoi(e)) : 0;
++        if (kb) logf("vk: read bindings of pools with no mirror copied as submitted, up to %llu KB each (RX_VK_BIND_SNAPSHOT_KB)",
++                     (unsigned long long)kb);
++        return kb << 10;
++    }();
++    return n;
++}
++int64_t st_snap_binds, st_snap_bytes, st_snap_big, st_snap_big_bytes, st_snap_failed;
++int64_t st_snap_gpu, st_snap_again;
++/// (pools_mu held) the copy, or nothing: over the size, a pool the GPU writes, no recording, no room in its stream.
++/// A pool the GPU wrote in guest memory in the last 4000 submissions is left alone: the copy is made on the CPU while
++/// the replay records, before the GPU has run the writes recorded ahead of it, and would hold the bytes from before
++/// them (measured: copying those too took a scene from 182 flashes to 1,577). The same range bound again in a
++/// submission gets the copy made for it before (one recording held 98 MB of copies without this)
++BufferRef bind_snapshot(const Pool& p, uint64_t gpu, uint64_t guest, uint64_t size) {
++    const uint64_t max = bind_snapshot_max();
++    if (!max || !size) return {};
++    if (size > max) {
++        st_snap_big++, st_snap_big_bytes += size;
++        return {};
++    }
++    if (p.direct_write_epoch && mirror_epoch - p.direct_write_epoch < 4000) {
++        st_snap_gpu++;
++        return {};
++    }
++    struct Made { uint64_t stamp = 0; std::unordered_map<uint64_t, BufferRef> at; };
++    static thread_local Made made;
++    if (made.stamp != mirror_epoch) made.stamp = mirror_epoch, made.at.clear();
++    const uint64_t key = guest * 0x9E3779B97F4A7C15ull ^ size;
++    if (const auto it = made.at.find(key); it != made.at.end() && it->second.size == size) {
++        st_snap_again++;
++        return it->second;
++    }
++    static thread_local std::vector<uint8_t> tmp;
++    if (tmp.size() < size) tmp.resize(size);
++    if (!host->gpu_read(gpu, tmp.data(), size)) return {};
++    if (capture_on() && captures_seen.load(std::memory_order_relaxed)) {   // (as memory_read_as_submitted, the lock held already)
++        for (uint64_t page = guest >> kPageShift; page < (guest + size + 4095) >> kPageShift; page++) {
++            const CapEntry e = cap_entry(page);
++            if (!e.gen || e.gen != page_gen(page)) continue;
++            auto b = cap_bufs.find(e.gen);
++            if (b == cap_bufs.end() || !b->second.map) continue;
++            const uint64_t a = std::max(page << kPageShift, guest), z = std::min((page + 1) << kPageShift, guest + size);
++            std::memcpy(tmp.data() + (a - guest), (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096 + (a - (page << kPageShift)), z - a);
++        }
++    }
++    const BufferRef r = stream_copy(tmp.data(), size);
++    if (r) st_snap_binds++, st_snap_bytes += size, made.at[key] = r;
++    else st_snap_failed++;
++    return r;
++}
++
+ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+     if (written) texture_gpu_wrote(gpu, size);
+     // (below 1 TB a GPU address is the guest address itself, and a pool holds the whole range or nothing: the host's
+@@ -2680,7 +2737,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+         Pool* p = tl.p;
+         const uint64_t off = guest - p->lo;
+         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+-        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED)
++        const bool snap = bind_snapshot_max() && mirror_upload && p->mstate != Pool::MIRROR_ON;   // (Deckport: below, under the lock)
++        if (!snap && (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED))
+             return remember({p->buffer, off, size, 0});
+         if (p->mstate == Pool::MIRROR_ON && p->synced_epoch == mirror_epoch && p->sync_seg <= texture_segment())
+             return remember({p->mirror, off, size, 0});
+@@ -2706,6 +2764,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+     const uint64_t off = guest - p->lo;
+     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
++        if (!written && mirror_upload && p->direct_write_epoch != mirror_epoch)   // (Deckport)
++            if (const BufferRef r = bind_snapshot(*p, gpu, guest, size)) return r;
+         if (written) note_direct_write(*p, off, size);
+         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; direct_bytes_by_pool[p->lo] += size; }
+         // (hookshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
+@@ -2734,6 +2794,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+         mirror_wanted.push_back(p);
+     }
+     if (p->mstate != Pool::MIRROR_ON) {
++        if (!written && p->direct_write_epoch != mirror_epoch)   // (Deckport)
++            if (const BufferRef r = bind_snapshot(*p, gpu, guest, size)) return r;
+         auto& e = direct_by_pool[p->lo];
+         e.first++, e.second = (int)p->mstate;
+         direct_bytes_by_pool[p->lo] += size;
+@@ -3480,6 +3542,13 @@ void memory_end_submission(VkCommandBuffer cmd) {
+                 s += b;
+             }
+             logf("vk:   read live, by pool:%s", s.c_str());
++            if (bind_snapshot_max()) {   // (Deckport)
++                static int64_t l_n, l_b, l_big, l_bigb;
++                logf("vk:   bind snapshots (600 submits): %lld copied, %.1f MB; %lld over the size left in guest memory, %.0f MB; %lld with no room; in all %lld bound again, %lld of pools the GPU writes",
++                     (long long)(st_snap_binds - l_n), (st_snap_bytes - l_b) / 1048576.0, (long long)(st_snap_big - l_big),
++                     (st_snap_big_bytes - l_bigb) / 1048576.0, (long long)st_snap_failed, (long long)st_snap_again, (long long)st_snap_gpu);
++                l_n = st_snap_binds, l_b = st_snap_bytes, l_big = st_snap_big, l_bigb = st_snap_big_bytes;
++            }
+             live_by_pool.clear();
+             // (and the bindings the GPU read in guest memory itself: pools with no mirror yet, or none (state 9: bound
+             // outside a recording))
+diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
+index 9b5a479..98f6383 100644
+--- a/gpu/vk/vk_menu.cpp
++++ b/gpu/vk/vk_menu.cpp
+@@ -26,6 +26,8 @@
+ #include <string>
+ #include <thread>
+ #include <vector>
++#include <deque>
++#include <climits>
+ 
+ #include "vk_paths.h"
+ #include "vk_menu.h"
+@@ -65,7 +67,8 @@ enum MenuTab {
+     TAB_COUNT = 5,
+     TAB_MOTION = TAB_COUNT,   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
+                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
+-    TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
++    TAB_PAGE = TAB_MOTION + 1,   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
++    TAB_DECKPORT = TAB_PAGE + 1   // (Deckport: as opções do menu do port, gravadas no ini; nenhuma aba do Hookshot as mostra)
+ };
+ 
+ struct Row {
+@@ -852,6 +855,11 @@ Row rows[] = {
+     {TAB_DEBUG, "Sampler cache", &opts.sampler_cache, 0, 1, 1, tx_onoff,
+      "What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no "
+      "lock. Helps while the game streams textures. Applies after restart.", nullptr, true},
++    {TAB_DECKPORT, "Deckport preset", &opts.dp_preset, 0, 4, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport distance", &opts.dp_distance, 0, 4, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport grass", &opts.dp_grass, 0, 2, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport shadows", &opts.dp_shadows, 0, 2, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport textures", &opts.dp_textures, 0, 1, 1, nullptr, "", nullptr, false, true},
+     // (Restart and Quit stay the table's last two: kRestartRow and kQuitRow count back from its end)
+     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
+      "Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B "
+@@ -2379,7 +2387,14 @@ float menu_ox = 0;   // (the menu's column's left edge in the window: more than
+ /// The menu: the game dimmed across the whole window, the pages in a column as wide as a 16:9 screen of this height, in the
+ /// middle (a window of 16:9 or narrower: the whole of it). The pages draw from 0 as on 16:9; their vertices and clip
+ /// rectangles are moved over after, and menu_tick moves the mouse back by menu_ox before it tests the hits
++#include "vk_deckport_menu.h"
+ void draw_menu(ui::Ctx& c) {
++    if (dp::on() && page == 0) {   // (Deckport: a tela inteira, no visual do jogo)
++        menu_ox = 0;
++        hits.clear(0, 0, c.w, c.h);
++        dp::paint(c);
++        return;
++    }
+     c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(8, 5, 2, ui::kDimAlpha));   // (the game behind, dimmed)
+     ui::Ctx k = c;
+     k.w = std::min(c.w, std::floor(c.h * 16.0f / 9.0f + 0.5f));
+@@ -2433,7 +2448,17 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
+ 
+ /// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
+ /// is under the logo at 0.86 of the logo's scale. startup_fade, 0 to 1, darkens it all to black as it ends
++#include "vk_deckport_startup.h"
+ void draw_startup(ui::Ctx& c) {
++    if (dp::startup_on()) {   // (Deckport: a tela de abertura do port)
++        StartupView dv;
++        {
++            std::lock_guard lk(startup_mu);
++            dv = startup;
++        }
++        dp::paint_startup(c, dv, startup_fade.load(std::memory_order_relaxed));
++        return;
++    }
+     StartupView v;
+     {
+         std::lock_guard lk(startup_mu);
+@@ -2830,7 +2855,7 @@ void menu_tick() {
+     if (host && host->binding)   // (A and B as bound now: the Controls page or the Layout preset can change them)
+         menu_keys::confirm_back(host->binding(HOS_BIND_PAD, HOS_SW_A, 0), host->binding(HOS_BIND_PAD, HOS_SW_B, 0), &pad_confirm,
+                                 &pad_back);
+-    if (pad(HOS_PAD_GUIDE) || chord_now) press[0] = true;
++    if (chord_now) press[0] = true;   // (Deckport: sem o Guide, o botão Steam é da Steam)
+     {   // holding an arrow or the D-pad repeats it: after 0.35 s, 12 a second, then 30 a second after 1.5 s held
+         static int64_t held_since[5], next_repeat[5];
+         const int pads[5] = {0, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT, HOS_PAD_RIGHT};
+@@ -3058,6 +3083,9 @@ void menu_tick() {
+             else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, kTeleports - 1);
+             if (teleport_choice != was) teleport_follow = true, changed = true;
+         }
++    } else if (open_now.load() && dp::on() && page == 0) {   // (Deckport: a navegação do menu do port)
++        const bool y_pad = listening != 1 && (pad_press >> HOS_PAD_NORTH & 1) != 0;
++        dp::tick(press, tab_left, tab_right, y_pad, mouse, mx, my, mouse ? ptr.pressed : 0, mine);
+     } else if (open_now.load()) {
+         if (mouse) {   // (the mouse: see the top of this file)
+             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
+@@ -3238,10 +3266,12 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+ 
+ void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
+     const bool open = open_now.load(std::memory_order_relaxed);
+-    const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
+-    if (!open && !fps) return;
++    const bool dp_test = dp::startup_test();   // (Deckport: a tela de abertura nas capturas de teste)
++    const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire) && !dp_test;
++    if (!open && !fps && !dp_test) return;
+     if (!ui::begin(w, h)) return;
+     ui::Ctx c = ui_ctx(w, h);
++    if (dp_test) draw_startup(c);
+     if (open) draw_menu(c);
+     if (fps) draw_fps(c, open);
+     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
+diff --git a/gpu/vk/vk_menu.h b/gpu/vk/vk_menu.h
+index d077bb8..b794a12 100644
+--- a/gpu/vk/vk_menu.h
++++ b/gpu/vk/vk_menu.h
+@@ -72,6 +72,11 @@ struct Options {
+     int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
+     int volume = 100;     // (hookshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
+     int mute_background = 0;   // (hookshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
++    int dp_preset = 1;    // (Deckport) predefinição: 0 Qualidade, 1 Equilibrado, 2 Desempenho, 3 Bateria, 4 Personalizado
++    int dp_distance = 2;  // (Deckport) distância de desenho: 0 Perto .. 4 Original (rodar-zelda.sh: o mod de vegetação)
++    int dp_grass = 0;     // (Deckport) grama: 0 50%, 1 75%, 2 original
++    int dp_shadows = 1;   // (Deckport) sombras: 0 original, 1 média (RX_VK_SHADOW_DIV=2), 2 baixa (4)
++    int dp_textures = 1;  // (Deckport) texturas: 0 altas (mod 1024), 1 médias (mod 512)
+     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
+ };
+ extern Options opts;
+diff --git a/gpu/vk/vk_replay.cpp b/gpu/vk/vk_replay.cpp
+index 7b2934f..61858c8 100644
+--- a/gpu/vk/vk_replay.cpp
++++ b/gpu/vk/vk_replay.cpp
+@@ -2452,6 +2452,106 @@ bool made_shot_init() {
+     return true;
+ }
+ 
++// (Deckport) RX_VK_AFLASH=1: flashes counted without waiting for the GPU (patches/patch_aflash.py)
++constexpr uint32_t kAfW = 64, kAfH = 36, kAfRing = 8;
++VkImage af_image = VK_NULL_HANDLE;
++VmaAllocation af_image_alloc = nullptr;
++VkBuffer af_bufs[kAfRing] = {};
++VmaAllocation af_allocs[kAfRing] = {};
++void* af_maps[kAfRing] = {};
++uint64_t af_values[kAfRing] = {};
++int64_t af_presents[kAfRing] = {};
++bool aflash_on() {
++    static const bool on = getenv("RX_VK_AFLASH") && atoi(getenv("RX_VK_AFLASH")) != 0;
++    return on;
++}
++bool aflash_init();
++void aflash_read(uint64_t done);
++
++bool aflash_init() {
++    if (af_image) return true;
++    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
++    ci.imageType = VK_IMAGE_TYPE_2D;
++    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
++    ci.extent = {kAfW, kAfH, 1};
++    ci.mipLevels = ci.arrayLayers = 1;
++    ci.samples = VK_SAMPLE_COUNT_1_BIT;
++    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++    if (!create_image(ci, af_image, af_image_alloc)) return false;
++    for (uint32_t i = 0; i < kAfRing; i++)
++        if (!create_buffer((uint64_t)kAfW * kAfH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, af_bufs[i], af_allocs[i], &af_maps[i]))
++            return false;
++    logf("vk: RX_VK_AFLASH: flashes counted from a 64x36 copy of each present, read once the GPU is past it (no wait)");
++    return true;
++}
++void aflash_read(uint64_t done) {
++    // (the finished slots in present order; a gap (a slot still busy when its turn came) starts the run again)
++    static std::vector<uint8_t> fa, fb;
++    static int64_t pa = -2, pb = -2;
++    static int64_t frames = 0, flashes = 0, flashes_total = 0, up_total = 0;
++    for (;;) {
++        int pick = -1;
++        for (uint32_t i = 0; i < kAfRing; i++)
++            if (af_values[i] && af_values[i] <= done && (pick < 0 || af_presents[i] < af_presents[pick])) pick = (int)i;
++        if (pick < 0) return;
++        const uint8_t* m = (const uint8_t*)af_maps[pick];
++        std::vector<uint8_t> fc(m, m + (size_t)kAfW * kAfH * 4);
++        const int64_t pc = af_presents[pick];
++        af_values[pick] = 0;
++        frames++;
++        if (pb == pc - 1 && pa == pc - 2) {
++            int hits = 0, up = 0;
++            static std::vector<uint8_t> af_mask;   // (Deckport: RX_VK_AFLASH_DUMP)
++            af_mask.assign((size_t)kAfW * kAfH, 0);
++            for (uint32_t i = 0; i < kAfW * kAfH; i++) {
++                int dab = 0, dbc = 0, dac = 0;
++                for (int ch = 0; ch < 3; ch++) {
++                    const int a = fa[i * 4 + ch], b = fb[i * 4 + ch], c = fc[i * 4 + ch];
++                    dab = std::max(dab, std::abs(a - b)), dbc = std::max(dbc, std::abs(b - c)), dac = std::max(dac, std::abs(a - c));
++                }
++                if (dab > 48 && dbc > 48 && dac < 16) hits++, up += fb[i * 4 + 1] > fa[i * 4 + 1], af_mask[i] = 255;
++            }
++            if (hits >= 40) {
++                flashes++, flashes_total++, up_total += up * 2 > hits;
++                {   // (Deckport) RX_VK_AFLASH_DUMP=<dir>: the three frames side by side and the cells that fired, as a PPM
++                    static const char* dir = getenv("RX_VK_AFLASH_DUMP");
++                    static int dumped = 0;
++                    if (dir && dumped < 160 && (flashes_total <= 40 || flashes_total % 8 == 0)) {
++                        char path[512];
++                        snprintf(path, sizeof path, "%s/af_%08lld.ppm", dir, (long long)pb);
++                        if (FILE* f = fopen(path, "wb")) {
++                            fprintf(f, "P6\n%u %u\n255\n", kAfW * 3, kAfH * 2);
++                            const std::vector<uint8_t>* fr[3] = {&fa, &fb, &fc};
++                            for (uint32_t y = 0; y < kAfH; y++)
++                                for (int k = 0; k < 3; k++)
++                                    for (uint32_t x = 0; x < kAfW; x++) fwrite(fr[k]->data() + ((size_t)y * kAfW + x) * 4, 1, 3, f);
++                            for (uint32_t y = 0; y < kAfH; y++)
++                                for (int k = 0; k < 3; k++)
++                                    for (uint32_t x = 0; x < kAfW; x++) {
++                                        const uint8_t v = k == 1 ? af_mask[(size_t)y * kAfW + x] : 0;
++                                        const uint8_t px[3] = {v, v, v};
++                                        fwrite(px, 1, 3, f);
++                                    }
++                            fclose(f);
++                            dumped++;
++                        }
++                    }
++                }
++                static int told = 0;
++                if (told++ < 200)
++                    logf("vk: aflash at present %lld: %d of %u cells, %s", (long long)pb, hits, kAfW * kAfH,
++                         up * 2 > hits ? "brighter" : "darker");
++            }
++        }
++        pa = pb, fa.swap(fb);
++        pb = pc, fb = std::move(fc);
++        if (frames % 600 == 0) {
++            logf("vk: aflash: %lld flashes in the last 600 frames read (%lld in all, %lld brighter; %.1f per 1000)", (long long)flashes,
++                 (long long)flashes_total, (long long)up_total, flashes_total * 1000.0 / frames);
++            flashes = 0;
++        }
++    }
++}
+ bool offscreen_init() {
+     if (!shot_dimensions_ready()) return false;
+     if (off_image) return true;
+@@ -3012,6 +3112,18 @@ void do_present(const nvn_tex* t, const int crop[4]) {
+         }
+         ts_anchor_ns = host->ticks() * 32;
+         dump_present(presents);
++        if (aflash_on()) {   // (Deckport: RX_VK_AFLASH)
++            aflash_read(vk_timeline_completed());
++            const uint32_t slot = (uint32_t)(presents % kAfRing);
++            if (src && !af_values[slot] && aflash_init()) {
++                image_barrier(r.cmd, af_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
++                blit_crop(r.cmd, src, sw, sh, crop, af_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kAfW, kAfH);
++                image_barrier(r.cmd, af_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++                const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kAfW, kAfH, 1}};
++                vkCmdCopyImageToBuffer(r.cmd, af_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, af_bufs[slot], 1, &c);
++                af_values[slot] = value, af_presents[slot] = presents;
++            }
++        }
+         if (src && (dev.offscreen || shots) && offscreen_init()) {
+             if (dev.offscreen) {
+                 image_barrier(r.cmd, off_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+@@ -3086,13 +3198,14 @@ void do_present(const nvn_tex* t, const int crop[4]) {
+                 const long count = e ? std::strtol(e, nullptr, 10) : 0;
+                 constexpr long capacity = sizeof(values) / sizeof(values[0]);
+                 if (count > capacity) logf("vk: RX_VK_WAIT_GPU=%ld exceeds the ring capacity; using %ld", count, capacity);
+-                return (int)std::clamp<long>(count, 0, capacity);
++                return (int)std::clamp<long>(count, -1, capacity);   // (Deckport: -1 kept, the frame itself; v2.0.12 clamped it to 0)
+             }();
+             if (ahead > 0) {
+                 const uint64_t old = values[presents % ahead];
+                 values[presents % ahead] = value;
+                 if (old) wait_value(old);
+             }
++            else if (ahead < 0) wait_value(value);   // (Deckport: -1, o próprio quadro, issue #1186)
+         }
+         if (presents % 300 == 0) pipeline_cache_save(false);
+         {   // (RX_VK_DUMP_KEY: F9 dumps the next frame, 8 times at most)
+diff --git a/gpu/vk/vk_shader.cpp b/gpu/vk/vk_shader.cpp
+index 7ffe2b0..2861c4e 100644
+--- a/gpu/vk/vk_shader.cpp
++++ b/gpu/vk/vk_shader.cpp
+@@ -996,7 +996,8 @@ void oot_visual(Shader::IR::Program& program, uint64_t key) {
+ // Deck plays with RX_VK_MESH_NOCULL=2c56dc1006942f74 (issue 817). A name under RX_VK_MESH, so the program cache starts
+ // again when it changes.
+ bool mesh_nocull_wanted(uint64_t code_key) {
+-    static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "";
++    // (Deckport: on by default for the Steam Deck cull task, issue 817; RX_VK_MESH_NOCULL=0 turns it off)
++    static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "2c56dc1006942f74";
+     if (list.empty() || list == "0") return false;
+     char hex[24];
+     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)code_key);
+@@ -1047,7 +1048,37 @@ void mesh_nocull(Shader::IR::Program& program, uint64_t code_key) {
+             inst.ReplaceUsesWith(Value{true});
+             made++;
+         }
++    int grid = 0;   // (Deckport, patches/patch_nocull_grid.py: a grade de uma célula só, o laço roda uma vez)
++    static const bool grid_on = !getenv("RX_VK_MESH_NOCULL_GRID") || atoi(getenv("RX_VK_MESH_NOCULL_GRID")) != 0;
++    if (made && grid_on)
++        for (Block* block : program.blocks)
++            for (Inst& inst : block->Instructions()) {
++                const Opcode op = inst.GetOpcode();
++                // (o shader lê largura e altura juntas, GetCbufU32x2 #3, #3088, e tira cada uma com CompositeExtractU32x2:
++                // o limite do laço é min(..., largura - 1). Com 1, o laço roda uma vez)
++                if (op == Opcode::CompositeExtractU32x2) {
++                    const Value src = inst.Arg(0).Resolve();
++                    if (src.IsImmediate()) continue;
++                    const Inst* c = src.InstRecursive();
++                    if (c->GetOpcode() != Opcode::GetCbufU32x2) continue;
++                    const Value bank = c->Arg(0).Resolve(), off = c->Arg(1).Resolve();
++                    if (!bank.IsImmediate() || !off.IsImmediate() || bank.U32() != 3 || off.U32() != 3088) continue;
++                    inst.ReplaceUsesWith(Value{1u});
++                    grid++;
++                    continue;
++                }
++                if (op != Opcode::GetCbufU32 && op != Opcode::GetCbufF32) continue;
++                const Value bank = inst.Arg(0).Resolve(), off = inst.Arg(1).Resolve();
++                if (!bank.IsImmediate() || !off.IsImmediate() || bank.U32() != 3) continue;
++                if (off.U32() != 3088 && off.U32() != 3092) continue;
++                inst.ReplaceUsesWith(op == Opcode::GetCbufF32 ? Value{1.0f} : Value{1u});
++                grid++;
++            }
+     if (made) Shader::Optimization::DeadCodeEliminationPass(program);
++    if (grid) {
++        static std::atomic<int> told_grid{0};
++        if (told_grid++ < 8) logf("vk: task code %016llx: grid read %d times, made 1x1 (RX_VK_MESH_NOCULL_GRID)", (unsigned long long)code_key, grid);
++    }
+     static std::atomic<int> told{0};
+     if (told++ < 8)
+         logf("vk: task code %016llx: culling %s (RX_VK_MESH_NOCULL)", (unsigned long long)code_key,
+@@ -1111,6 +1142,7 @@ uint64_t disk_stamp() {
+     // lost it)
+     const uint64_t translator = HOOKSHOT_SHADER_STAMP;
+     add(&translator, sizeof translator);
++    if (!getenv("RX_VK_MESH_NOCULL_GRID") || atoi(getenv("RX_VK_MESH_NOCULL_GRID")) != 0) add("deckport-grid-2", 15);   // (patch_nocull_grid.py)
+     const uint32_t depth = host->depth_minus_w() != 0;   // (d3zessete's PR 54: programs made in either depth mode are kept apart)
+     add(&depth, sizeof depth);
+     // (and a GPU's mesh shaders: a file of native task and mesh programs is no use to the compute fallback, nor its to one)
+diff --git a/gpu/vk/vk_texture.cpp b/gpu/vk/vk_texture.cpp
+index 27d7445..f224b67 100644
+--- a/gpu/vk/vk_texture.cpp
++++ b/gpu/vk/vk_texture.cpp
+@@ -1414,6 +1414,50 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+     if (tex.astc && (up_route = UP_ASTC, upload_astc_gpu(tex, total, dirty))) return true;
+     up_route = UP_CPU;
+     if (tex.bc) return false;   // (no CPU path into BC3)
++    if (tex.shrink) {   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape: cleared once, never uploaded)
++        if (!tex.uploaded) {
++            VkCommandBuffer cmd = upload_cmd();
++            full_barrier(cmd);
++            const VkClearDepthStencilValue z{0.0f, 0};
++            const VkImageSubresourceRange r{VK_IMAGE_ASPECT_DEPTH_BIT, 0, tex.levels, 0, tex.layers};
++            vkCmdClearDepthStencilImage(cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r);
++            full_barrier(cmd);
++        }
++        return up_route = UP_GPU, true;
++    }
++    {   // (Deckport, patches/patch_depthzero.py) a new big depth target still all zero: cleared on the GPU, not unswizzled on
++        // the CPU (the 12288x12288 shadow target as the castle loads: 3.5 s on the Deck)
++        static const bool on = !getenv("RX_VK_DEPTH_ZERO") || atoi(getenv("RX_VK_DEPTH_ZERO")) != 0;
++        if (on && !dirty && !tex.uploaded && is_depth_format(tex.format) && !(tex.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
++            total >= (16u << 20) && !(tex.gpu < (1ull << 40) && memory_has_shadow(tex.gpu, total))) {
++            bool zero = true;
++            std::vector<uint8_t> part;
++            for (uint64_t at = 0; at < total && zero; at += (1u << 20)) {
++                const uint64_t n = std::min<uint64_t>(1u << 20, total - at);
++                uint64_t avail = 0;
++                const uint8_t* d = host->gpu_ptr(tex.gpu + at, &avail);
++                if (!d || avail < n) part.assign(n, 1), host->gpu_read(tex.gpu + at, part.data(), n), d = part.data();
++                const uint64_t* w = (const uint64_t*)d;
++                for (uint64_t i = 0; i < n / 8; i++)
++                    if (w[i]) { zero = false; break; }
++                for (uint64_t i = n / 8 * 8; zero && i < n; i++)
++                    if (d[i]) zero = false;
++            }
++            if (zero) {
++                VkCommandBuffer cmd = upload_cmd();
++                full_barrier(cmd);
++                const VkClearDepthStencilValue z{0.0f, 0};
++                const VkImageSubresourceRange r{VK_IMAGE_ASPECT_DEPTH_BIT, 0, tex.levels, 0, tex.layers};
++                vkCmdClearDepthStencilImage(cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r);
++                full_barrier(cmd);
++                static int told;
++                if (told++ < 20)
++                    logf("vk: depth target #%u %ux%u NVN %#x (%llu MB) all zero: cleared on the GPU, not uploaded (RX_VK_DEPTH_ZERO)",
++                         tex.id, tex.width, tex.height, tex.nvn_format, (unsigned long long)(total >> 20));
++                return up_route = UP_GPU, true;
++            }
++        }
++    }
+     // (the GPU's unswizzle reads guest memory as it is: not where the capture kept the storage as it was at its submit)
+     if (!(tex.gpu < (1ull << 40) && memory_has_shadow(tex.gpu, total)) && upload_unswizzle_gpu(tex, total, dirty))
+         return up_route = UP_GPU, true;
+@@ -1969,6 +2013,18 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
+         flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+         if (dev.view_2d_of_3d) flags |= VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
+     }
++    {   // (Deckport, patches/patch_shadowdiv.py: the 12288 x 12288 shadow map made smaller)
++        static const uint32_t sdiv = getenv("RX_VK_SHADOW_DIV") ? (uint32_t)std::max(1, atoi(getenv("RX_VK_SHADOW_DIV"))) : 2u;
++        if (sdiv > 1 && is_depth_format(x.format) && !(x.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
++            x.type == VK_IMAGE_TYPE_2D && x.levels == 1 && x.layers == 1 && x.samples == VK_SAMPLE_COUNT_1_BIT &&
++            !x.sparse && x.width >= 8192 && x.height >= 8192) {
++            static int told;
++            if (told++ < 8)
++                logf("vk: depth target %ux%u made %ux%u (RX_VK_SHADOW_DIV=%u: its passes' viewport and scissor divided)", x.width,
++                     x.height, x.width / sdiv, x.height / sdiv, sdiv);
++            x.width /= sdiv, x.height /= sdiv, x.shrink = sdiv;
++        }
++    }
+     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+     ci.flags = flags;
+     ci.imageType = x.type;
+@@ -2810,6 +2866,7 @@ bool flush_uncached() {
+ /// The copies of f's image into a staging buffer of its own, recorded into rb_cmd (begun by the caller); false: nothing recorded
+ bool flush_record(Flush& f) {
+     Texture& t = *f.t;
++    if (t.shrink) return f.ok = false;   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape)
+     const uint32_t layers = t.type == VK_IMAGE_TYPE_3D ? 1 : t.layers;
+     for (uint32_t level = 0; level < t.levels; level++) {
+         const LevelGeo g = level_geo(t, level);
+diff --git a/gpu/vk/vk_texture.h b/gpu/vk/vk_texture.h
+index a20e9ac..3bfade1 100644
+--- a/gpu/vk/vk_texture.h
++++ b/gpu/vk/vk_texture.h
+@@ -29,6 +29,7 @@ struct Texture {
+     VkImageCreateFlags create_flags = 0;   // (hookshot: as its image was made, for the compaction's copy of it)
+     uint32_t width = 1, height = 1, depth = 1, levels = 1, layers = 1;   // the image's (after skip)
+     uint32_t skip = 0;        // top levels of the texture left out (huge textures: RX_VK_TEX_MAX_DIM, _MAX_MB)
++    uint32_t shrink = 0;      // (Deckport, RX_VK_SHADOW_DIV) a huge depth target made 1/shrink of its size
+     // (a huge array kept whole as a sparse resident image instead: each layer gets device memory when it is first
+     // written, so only what the game streams in costs VRAM. MKW's terrain arrays, 8192 x 8192 x 68 BC6H: 5.8 GB
+     // each, written by the GPU's copies into level 0, which a texture with its top level left out lost)
+diff --git a/gpu/vk/vk_xfer.cpp b/gpu/vk/vk_xfer.cpp
+index dd7a237..256f696 100644
+--- a/gpu/vk/vk_xfer.cpp
++++ b/gpu/vk/vk_xfer.cpp
+@@ -172,6 +172,11 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
+     // it fills is kept (texture_frame: a texture the GPU filled once is not evicted). RX_VK_B2T_CPU=1: on the CPU too)
+     static const bool b2t_gpu = getenv("RX_VK_B2T_CPU") == nullptr;
+     const bool astc = to_image && p.tex && vk_format(view_nvn_format(p.tex, p.has_view ? &p.view : nullptr)).astc;
++    if (p.tex)
++        if (Texture* st_ = texture_get(p.tex, false); st_ && st_->shrink) {   // (Deckport, RX_VK_SHADOW_DIV)
++            warn(9, "buffer copy with a shrunk depth target (RX_VK_SHADOW_DIV): skipped");
++            return;
++        }
+     if (to_image && p.tex) {   // (RX_VK_LOG_BIG_COPY)
+         if (Texture* t = texture_get(p.tex, false))
+             log_big_copy(b2t_gpu && !astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
+@@ -241,6 +246,10 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
+     Sub s, d;
+     if (!resolve(p.src, &p.sv, p.has_sv != 0, p.sr, s, true)) return;
+     if (!resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true)) return;
++    if (s.tex->shrink || d.tex->shrink) {   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape)
++        warn(8, "texture copy with a shrunk depth target (RX_VK_SHADOW_DIV): skipped");
++        return;
++    }
+     {   // (RX_VK_LOG_COPY: the texture copies, 400 of them)
+         static const bool log_copy = getenv("RX_VK_LOG_COPY") != nullptr;
+         static int logged;
+diff --git a/nx2/build.py b/nx2/build.py
+index 695dc40..8dbd526 100644
+--- a/nx2/build.py
++++ b/nx2/build.py
+@@ -914,7 +914,7 @@ def main():
+             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
+             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
+             "-include", "string", "-include", "vector",
+-            "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
++            "-std=c++20", "-" + os.environ.get("RX_VK_OPT", "O2"), *os.environ.get("RX_VK_CXX_EXTRA", "").split(), "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
+             *(["-DHOOKSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
+             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
+             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
+@@ -1139,7 +1139,7 @@ def main():
+         t = time.time()
+         if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
+             link = [toolchain.need(toolchain.find("clang++"))] + target() + [
+-                "-fuse-ld=lld", "-shared", "-o", vdll, "-Wl,-Map=" + vdll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
++                "-fuse-ld=lld", "-shared", *os.environ.get("RX_VK_LD_EXTRA", "").split(), "-o", vdll, "-Wl,-Map=" + vdll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
+                 "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
+                 ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
+         else:
