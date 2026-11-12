@@ -14,8 +14,7 @@ cp "$raiz/rodar-zelda.sh" "$raiz/instalar.sh" "$raiz/LICENSE" "$raiz/README.md" 
 rm -rf "$pkg/instalador/__pycache__"
 echo "$versao" > "$pkg/VERSAO"
 # fim de linha do Linux em tudo o que roda no Deck (no Windows a cópia de trabalho pode estar com CRLF)
-find "$pkg" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.h" -o -name "*.patch" -o -name "*.md" -o -name "*.Dockerfile" \) -exec sed -i 's/
-$//' {} +
+find "$pkg" -type f \( -name "*.sh" -o -name "*.py" -o -name "*.h" -o -name "*.patch" -o -name "*.md" -o -name "*.Dockerfile" \) -exec sed -i 's/\r$//' {} +
 # conferência: nenhum arquivo do jogo (texturas, pacotes, tabelas, imagem do executável, dados de save)
 if find "$pkg" -type f | grep -qiE '\.(nup|nsp|xci|bntx|zs|bfotf|blarc|byml|bgyml|sarc|bin)$'; then
     echo "ERRO: arquivo do jogo no pacote:"; find "$pkg" -type f | grep -iE '\.(nup|nsp|xci|bntx|zs|bfotf|blarc|byml|bgyml|sarc|bin)$'; exit 1
