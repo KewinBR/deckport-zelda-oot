@@ -116,6 +116,41 @@ def gravar_atalho(config: Path, exe: Path, pasta: Path):
     return appid
 
 
+def remover_atalho() -> int:
+    """Tira a entrada do port de cada shortcuts.vdf (com cópia de segurança) e as artes dela em config/grid.
+    Devolve quantas entradas saíram."""
+    configs = sorted((STEAM / "userdata").glob("*/config"))
+    if not configs:
+        return 0
+    if not fechar_steam():
+        raise RuntimeError("a Steam nao fechou em 90 s; nada foi mudado")
+    saiu = 0
+    for config in configs:
+        vdf = config / "shortcuts.vdf"
+        if not vdf.exists():
+            continue
+        raiz, _ = ler_vdf(vdf.read_bytes())
+        atalhos = raiz.get("shortcuts", {})
+        chaves = [k for k, v in atalhos.items() if v.get("AppName") == NOME]
+        if not chaves:
+            continue
+        for k in chaves:
+            appid = struct.unpack("<I", struct.pack("<i", atalhos[k].get("appid", 0)))[0]
+            for sufixo in ("p", "", "_hero", "_logo", "_icon"):
+                (config / "grid" / f"{appid}{sufixo}.png").unlink(missing_ok=True)
+            del atalhos[k]
+            saiu += 1
+        # a Steam espera as chaves 0, 1, 2... em sequência
+        raiz["shortcuts"] = {str(i): v for i, v in enumerate(atalhos.values())}
+        shutil.copyfile(vdf, vdf.with_name(vdf.name + time.strftime(".bak-%Y%m%d-%H%M%S")))
+        novo = escrever_vdf(raiz)
+        ler_vdf(novo)
+        tmp = vdf.with_suffix(".vdf.tmp")
+        tmp.write_bytes(novo)
+        os.replace(tmp, vdf)
+    return saiu
+
+
 def criar_atalho(raiz: Path, port: Path):
     """Um atalho por usuario da Steam no Deck, apontando pro iniciador instalado."""
     exe = Path.home() / ".local" / "share" / "zelda-oot-deck" / "rodar-zelda.sh"

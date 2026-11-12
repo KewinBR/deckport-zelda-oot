@@ -10,4 +10,5 @@ Primeira versão aberta para testes.
   resolução do Deck, sombra reduzida, menu do port e tela de abertura.
 - Mods gerados no Deck a partir do jogo: texturas reduzidas (512 e 1024) e 14 níveis de vegetação.
 - Lançador com vigia de memória por pressão do kernel e log de cada sessão.
+- Desinstalador (`instalador/desinstalar.py`): tira o atalho, o port e os mods, e mantém os saves e o jogo montado.
 - Defeitos conhecidos no README.

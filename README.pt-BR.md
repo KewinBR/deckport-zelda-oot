@@ -58,6 +58,20 @@ nada do jogo é baixado.
 
 O instalador não muda nada no sistema. Tudo fica na sua pasta pessoal e, se você escolher, no cartão SD.
 
+## Atualizar e desinstalar
+
+Para atualizar, rode o instalador de novo (passo 2 acima). Ele baixa a versão mais nova e aproveita o que já foi
+feito: o jogo montado e as texturas não são refeitos.
+
+Para desinstalar, no Konsole:
+```bash
+python3 ~/.local/share/zelda-oot-deck/instalador/desinstalar.py
+```
+Isso tira o atalho da Steam, o port, a configuração, os mods gerados e os logs. Os saves continuam em
+`~/.local/share/hookshot`, e a pasta do jogo montado também fica, de volta ao renderizador original do Hookshot. Com
+`--com-jogo`, a pasta do jogo que o instalador montou também é apagada. Uma pasta que você montou antes do port nunca
+é apagada.
+
 ## Como relatar um problema
 
 Abra uma issue e anexe o log da sessão em que o problema aconteceu. Os logs ficam em `zelda-oot-deck/logs/`, dentro

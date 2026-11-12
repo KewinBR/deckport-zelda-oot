@@ -60,6 +60,20 @@ is downloaded.
 The installer changes nothing in the system. Everything stays in your home folder and, if you choose it, on the SD
 card.
 
+## Updating and uninstalling
+
+To update, run the installer again (step 2 above). It downloads the latest version and keeps the work already done:
+the built game and the textures are not made again.
+
+To uninstall, in Konsole:
+```bash
+python3 ~/.local/share/zelda-oot-deck/instalador/desinstalar.py
+```
+This removes the Steam shortcut, the port, its settings, the generated mods and the logs. Your saves stay in
+`~/.local/share/hookshot`, and the built game folder stays too, back on Hookshot's original renderer. Add
+`--com-jogo` to also delete the game folder the installer built. A folder you built yourself before the port is never
+deleted.
+
 ## How to report a problem
 
 Open an issue and attach the log of the session where the problem happened. The logs are in `zelda-oot-deck/logs/`,
