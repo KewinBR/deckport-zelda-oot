@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Instalador do Deckport do Zelda: Ocarina of Time, para o Modo Desktop do Steam Deck.
-# Baixa a última versão do port (uns 20 MB; nada do jogo) e abre o instalador.
+# Baixa a última versão do port (uns 9 MB; nada do jogo) e abre o instalador.
 # Pelo Konsole:  curl -L https://github.com/KewinBR/deckport-zelda-oot/releases/latest/download/instalar.sh | bash
 set -euo pipefail
 repo=KewinBR/deckport-zelda-oot
