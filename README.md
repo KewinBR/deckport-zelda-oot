@@ -36,6 +36,11 @@ is downloaded.
 - **Slow first start.** Preparing the shaders takes over 30 minutes, only once.
 - **Only the beginning of the game was tested.** Other Deck owners report GPU hangs in later areas.
 - Building the game on the Deck itself takes one to two hours.
+- **The installer has not yet built the game from a `.nup` from start to finish in our tests.** Pointing it at a folder
+  already built by Hookshot v2.1.0 was tested on the Deck from start to finish. With a `.nup`, the Hookshot download
+  and the start of the build were tested, but not the whole build. If it fails, open an issue with
+  `zelda-oot-deck/logs/montagem.log`, or build the game with Hookshot v2.1.0 yourself and point the installer to that
+  folder.
 
 ## What you need
 

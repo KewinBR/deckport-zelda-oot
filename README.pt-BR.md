@@ -36,6 +36,11 @@ nada do jogo é baixado.
 - **Primeira abertura demorada.** A preparação dos shaders leva mais de 30 minutos, uma vez só.
 - **Só o começo do jogo foi testado.** Outros donos de Deck relatam travadas da GPU em áreas mais adiante.
 - A montagem do jogo no próprio Deck leva de uma a duas horas.
+- **A montagem do jogo a partir do `.nup` pelo instalador ainda não foi testada do começo ao fim.** Apontar uma pasta já
+  montada pelo Hookshot v2.1.0 foi testado no Deck do começo ao fim. Com o `.nup`, testamos o download do Hookshot e o
+  começo da montagem, mas não a montagem inteira. Se falhar, abra uma issue com o arquivo
+  `zelda-oot-deck/logs/montagem.log`, ou monte o jogo você mesmo com o Hookshot v2.1.0 e aponte essa pasta no
+  instalador.
 
 ## Do que você precisa
 
