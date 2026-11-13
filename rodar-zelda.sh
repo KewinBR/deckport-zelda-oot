@@ -76,13 +76,17 @@ opcoes_deckport() {
     fi
     local m=$base/mods-atual
     rm -rf "$m"; mkdir -p "$m"
-    if (( tex == 0 )); then ln -s "$base/mods-tex1024/deckport-texturas" "$m/deckport-texturas"
-    else ln -s "$base/mods-tex512/deckport-texturas" "$m/deckport-texturas"; fi
+    # Lightmaps reduzidos (2026-11-12, ferramentas/lightmaps): mods-tex<N>-lm é o mod de texturas com os lightmaps
+    # (Tex/RBake_*) refeitos a 1024 por cima e a sua própria tabela de tamanhos. Se existir, é ele que vale;
+    # ZELDA_LIGHTMAPS=0 volta ao mod sem lightmaps.
+    local tx=$base/mods-tex512
+    (( tex == 0 )) && tx=$base/mods-tex1024
+    [[ ${ZELDA_LIGHTMAPS:-1} != 0 && -d $tx-lm/deckport-texturas && -f $tx-lm/prompts-rsizetable.zs ]] && tx=$tx-lm
+    ln -s "$tx/deckport-texturas" "$m/deckport-texturas"
     # Ícones de botão do Steam Deck (Hookshot v2.1.0, pasta prompts/ do jogo): um mod com a tabela de tamanhos faz o
     # Hookshot desistir da fonte dos ícones. A tabela do mod de texturas fica fora do mod, já com a entrada da fonte
     # aumentada (ferramentas/tabela_prompts.py), e vai para prompts/rsizetable.zs, que o Hookshot serve.
-    local tab=$base/mods-tex512/prompts-rsizetable.zs
-    (( tex == 0 )) && tab=$base/mods-tex1024/prompts-rsizetable.zs
+    local tab=$tx/prompts-rsizetable.zs
     if [[ -f $tab && -d $jogo/prompts && -z $mods_fora ]]; then
         [[ -f $jogo/prompts/rsizetable-hookshot.zs ]] || cp "$jogo/prompts/rsizetable.zs" "$jogo/prompts/rsizetable-hookshot.zs"
         cmp -s "$tab" "$jogo/prompts/rsizetable.zs" || { cp "$tab" "$jogo/prompts/rsizetable.zs.novo" && mv "$jogo/prompts/rsizetable.zs.novo" "$jogo/prompts/rsizetable.zs"; }
@@ -91,7 +95,7 @@ opcoes_deckport() {
     export HOS_MODS=${mods_fora:-$m}
     local div=(1 2 4)
     export RX_VK_SHADOW_DIV=${sombra_fora:-${div[$sombra]:-2}}
-    echo "opções do port: texturas $tex, distância $dist, grama $grama, sombra $sombra -> HOS_MODS=$HOS_MODS RX_VK_SHADOW_DIV=$RX_VK_SHADOW_DIV"
+    echo "opções do port: texturas $tex ($(basename "$tx")), distância $dist, grama $grama, sombra $sombra -> HOS_MODS=$HOS_MODS RX_VK_SHADOW_DIV=$RX_VK_SHADOW_DIV"
 }
 opcoes_deckport
 # Base v2.0.7 (2026-11-09): o crash write 0x40 do RADV foi corrigido na v2.0.6, então a compilação de shaders na abertura
@@ -206,6 +210,9 @@ pid_jogo=$!
 # 2026-11-12: os 2500 fechavam o jogo em pico passageiro. Na troca de área o jogo carrega a área nova antes de soltar a
 # velha (GTT +1,1 GB em 25 s) e a soma caiu a 2357 MB com 2,1 GB de swap ainda livres, numa tela de carregamento. Agora
 # fecha com a pressão de memória do kernel (PSI full avg10) em 35% ou mais, ou com menos de 1300 MB na soma.
+# 2026-11-13: na noite de 2026-11-12 o vigia fechou o jogo 4 vezes, 3 delas com pressão 0%. O jogo passa 20 a 60 min
+# com o swap cheio (0 MB livres) e 1,6 a 1,9 GB de RAM disponível, jogando bem, e cai a 1,2-1,3 GB por segundos na
+# troca de área. Agora: pressão >= 35%, ou soma < 800 MB, ou soma < 1300 MB com pressão >= 5% (aí sim é engasgo).
 ( n=0
   while kill -0 $pid_jogo 2>/dev/null; do
       livre=$(awk '/^MemAvailable/{a=$2} /^SwapFree/{s=$2} END{print int((a+s)/1024)}' /proc/meminfo)
@@ -217,7 +224,7 @@ pid_jogo=$!
       # É o sinal de que o Deck está engasgando de verdade; a soma livre sozinha fechava o jogo em pico de carregamento.
       psi=$(awk '/^full/{sub("avg10=","",$2); print int($2)}' /proc/pressure/memory 2>/dev/null); psi=${psi:-0}
       (( n % 5 == 1 )) && echo "psi: $(date +%T) full avg10 $psi% livre+swap $livre MB"
-      if (( livre < 1300 || psi >= 35 )); then
+      if (( psi >= 35 || livre < 800 || (livre < 1300 && psi >= 5) )); then
           echo "vigia: memória acabando ($livre MB livres com o swap, pressão $psi%), fechando o jogo; maiores mapeamentos (RSS+swap, MB):"
           # (2026-11-10: o que cresce perto do castelo não aparecia no VmRSS; isto diz em qual mapeamento está)
           awk '/^[0-9a-f]+-[0-9a-f]+ /{n=($6==""?"[anon]":$6)} /^Rss:/{r[n]+=$2} /^Swap:/{w[n]+=$2}
