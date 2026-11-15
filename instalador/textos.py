@@ -55,7 +55,7 @@ TEXTOS = {
     "recomendado": ("RECOMENDADO", "RECOMMENDED"),
     "instalando_titulo": ("Instalando", "Installing"),
     "etapa_port": ("Preparando o Deckport", "Preparing Deckport"),
-    "etapa_hookshot": ("Baixando o Longshot v3.0.0-rc.3", "Downloading Longshot v3.0.0-rc.3"),
+    "etapa_hookshot": ("Baixando o Longshot", "Downloading Longshot"),
     "etapa_montar": ("Montando o jogo (a parte demorada)", "Building the game (the long part)"),
     "etapa_renderizador": ("Colocando o renderizador do port", "Installing the port's renderer"),
     "etapa_texturas": ("Gerando as texturas do Deck", "Generating the Deck textures"),

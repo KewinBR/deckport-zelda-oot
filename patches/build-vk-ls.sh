@@ -5,9 +5,9 @@
 set -e
 # A marca do port nao pode faltar: sem o menu e a tela de abertura do Deckport na arvore, nao compila.
 for m in "dp::paint_startup" "dp::paint(c)"; do
-  grep -q "$m" $HOME/zelda-oot/ls-220/gpu/vk/vk_menu.cpp || { echo "ERRO: falta $m em vk_menu.cpp. Rode patches/patch_menu_deckport.py e patches/patch_tela_abertura.py na arvore."; exit 1; }
+  grep -q "$m" ${ARVORE:-$HOME/zelda-oot/ls-220}/gpu/vk/vk_menu.cpp || { echo "ERRO: falta $m em vk_menu.cpp. Rode patches/patch_menu_deckport.py e patches/patch_tela_abertura.py na arvore."; exit 1; }
 done
-nice -n 15 docker run --rm -v $HOME/zelda-oot/ls-220:/src -v $HOME/zelda-oot/src:$HOME/zelda-oot/src -w /src -e HOME=/tmp deckport-build:noble bash -c "
+nice -n 15 docker run --rm -v ${ARVORE:-$HOME/zelda-oot/ls-220}:/src -v $HOME/zelda-oot/src:$HOME/zelda-oot/src -w /src -e HOME=/tmp deckport-build:noble bash -c "
 set -e
 bash scripts/linux/deps.sh
 export EMSDK=/src/build-linux/deps/emsdk RX_CPM=/src/build-linux/deps/cpm

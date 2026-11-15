@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Monta o pacote da versão: dist/zelda-oot-deck-vX.Y.Z.tar.gz com o renderizador do port (compilado na VPS), o lançador, os ajudantes, as ferramentas dos mods e o instalador. Nada do jogo entra.
+# Monta o pacote da versão: dist/zelda-oot-deck-vX.Y.Z.tar.gz com o patch do renderizador, o lançador, os ajudantes, as ferramentas dos mods e o instalador. Nada do jogo entra.
 #   bash ferramentas/montar-pacote.sh v0.1.0
 set -euo pipefail
 versao=${1:?versão, ex.: v0.1.0}
@@ -7,10 +7,9 @@ raiz=$(cd -- "$(dirname -- "$0")/.." && pwd)
 vps=${VPS:-kewin-vps}
 dist=$raiz/dist
 pkg=$dist/zelda-oot-deck
-rm -rf "$pkg"; mkdir -p "$pkg/renderizador"
-# o renderizador do Deck do Kewin: Longshot 5e072fc8 + patches/deckport-longshot-5e072fc8.patch (build-vk-ls.sh)
-scp -q "$vps:zelda-oot/longshot_vk-ls-1.so" "$pkg/renderizador/longshot_vk.so"
-echo "renderizador: $(sha256sum "$pkg/renderizador/longshot_vk.so" | cut -c1-16)"
+rm -rf "$pkg"; mkdir -p "$pkg"
+# (desde a v0.1.1 o renderizador não vai pronto: o builder do Longshot o compila na montagem, das fontes com o patch do
+# port, patches/deckport-longshot-<base>.patch)
 cp -r "$raiz/instalador" "$raiz/deck" "$raiz/arte" "$raiz/patches" "$pkg/"
 cp "$raiz/rodar-zelda.sh" "$raiz/instalar.sh" "$raiz/LICENSE" "$raiz/README.md" "$raiz/README.pt-BR.md" "$pkg/"
 rm -rf "$pkg/instalador/__pycache__"
@@ -25,7 +24,7 @@ fi
 python - "$dist" "$versao" <<'PY'
 import os, sys, tarfile
 dist, versao = sys.argv[1], sys.argv[2]
-exe = {"rodar-zelda.sh", "instalar.sh", "renderizador/longshot_vk.so"}
+exe = {"rodar-zelda.sh", "instalar.sh"}
 def ajusta(ti):
     rel = ti.name.split("/", 1)[1] if "/" in ti.name else ""
     ti.mode = 0o755 if ti.isdir() or rel in exe else 0o644

@@ -36,15 +36,82 @@ AQUI = Path(__file__).resolve().parent
 PACOTE = AQUI.parent  # a raiz do pacote da release (VERSAO, rodar-zelda.sh, deck/, renderizador/, instalador/)
 APPDIR = Path.home() / ".local" / "share" / APP
 
-# A base: o Longshot, a continuação do Hookshot (git.magicbean.dev/MagicBeanDev/Longshot, GPL-3). O renderizador do port
-# conversa com o executável pela versão 21 da interface, a da v3.0.0-rc.3 (a rc.4 em diante já é a 22). Outra versão não
-# serve: o renderizador é trocado inteiro. (O Hookshot saiu do GitHub em 2026-11-13.)
+# A base: o Longshot, a continuação do Hookshot (git.magicbean.dev/MagicBeanDev/Longshot, GPL-3). Desde a nightly 18x o
+# builder compila o renderizador na montagem, com as fontes que carrega (sem .so pronto, commit 25726217): o patch do
+# port (patches/BASE_PATCH: as alterações do Deck e as correções do Longshot que vieram depois daquela nightly) é aplicado
+# nessas fontes, e a montagem já sai com o renderizador do port e os shaders preparados com ele. (O Hookshot saiu do
+# GitHub em 2026-11-13.)
 BASE_NOME = "Longshot"
-BASE_VERSAO = "v3.0.0-rc.3"
+BASE_VERSAO = "nightly-189-aa95d35f"
 BASE_ARQUIVO = f"Longshot-{BASE_VERSAO}-x86_64.AppImage"
 BASE_URL = f"https://git.magicbean.dev/MagicBeanDev/Longshot/releases/download/{BASE_VERSAO}/{BASE_ARQUIVO}"
-BASE_SHA256 = "910799f8361cce6e1c5413434d2205b6cdec63f7bcf4350a151ca26e93cf8256"
-BASE_BYTES = 98609656
+BASE_SHA256 = "91e0431ae45c87c700572aa80943f7395bbe57c77fbfb946542bb5f4d5bab787"
+BASE_BYTES = 99478008
+BASE_PATCH = f"deckport-longshot-{BASE_VERSAO}.patch"
+# (a pasta do jogo montada pelo port guarda a identidade da base com que foi montada: a versão do Longshot e a soma do
+# patch. Mudou qualquer um dos dois, ela é montada de novo)
+MARCA = "deckport_base.txt"
+# As nightlies do Longshot somem do servidor depois de uns dias: o mesmo arquivo vai também como anexo do release do
+# port, e o instalador tenta os dois (a soma é conferida em qualquer um).
+REPO = "KewinBR/deckport-zelda-oot"
+
+
+def versao_do_pacote(pacote: Path | None = None) -> str:
+    try:
+        return ((pacote or PACOTE) / "VERSAO").read_text().strip()
+    except OSError:
+        return ""
+
+
+def urls_da_base(pacote: Path | None = None) -> list[str]:
+    v = versao_do_pacote(pacote)
+    espelho = [f"https://github.com/{REPO}/releases/download/{v}/{BASE_ARQUIVO}"] if v else []
+    return [BASE_URL, *espelho]
+
+
+def identidade_base(pacote: Path | None = None) -> str:
+    """'Longshot nightly-189-aa95d35f + 1a2b3c4d5e6f': a base e a soma do patch do port sobre ela."""
+    try:
+        sha = hashlib.sha256(((pacote or PACOTE) / "patches" / BASE_PATCH).read_bytes()).hexdigest()[:12]
+    except OSError:
+        sha = "?"
+    return f"{BASE_NOME} {BASE_VERSAO} + {sha}"
+
+
+def aplicar_patch(patch: Path, pasta: Path) -> None:
+    """O patch do port nas fontes do builder (git apply; sem o git, o patch do sistema)."""
+    for cmd in (["git", "apply", "-p1", "--whitespace=nowarn", str(patch)], ["patch", "-p1", "-N", "-i", str(patch)]):
+        try:
+            r = subprocess.run(cmd, cwd=pasta, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except FileNotFoundError:
+            continue
+        if r.returncode == 0:
+            return
+        raise RuntimeError(f"o patch do port não entrou nas fontes do Longshot ({cmd[0]}): {r.stdout.strip()[-300:]}")
+    raise RuntimeError("falta o git ou o patch para aplicar o patch do port")
+
+
+def trocar_jogo(raiz: Path, novo: Path, atual: Path) -> Path:
+    """Põe a pasta recém-montada (novo) no lugar de raiz/jogo, levando as opções do jogador (as do Longshot e as do menu
+    do port, no longshot_options.ini) da pasta em uso (atual). Uma pasta montada antes do port (fora de raiz) fica como
+    está; a raiz/jogo antiga sai (o romfs da nova é o mesmo, por hardlink: nada se perde)."""
+    for nome in ("longshot_options.ini", "longshot_env.txt"):
+        if (atual / nome).is_file() and not (atual / nome).is_symlink():
+            shutil.copy2(atual / nome, novo / nome)
+    final, velho = raiz / "jogo", raiz / "jogo-velho"
+    shutil.rmtree(velho, ignore_errors=True)
+    if final.exists():
+        final.replace(velho)
+    novo.replace(final)
+    shutil.rmtree(velho, ignore_errors=True)
+    return final
+
+
+def marca_da_pasta(pasta: Path) -> str:
+    try:
+        return (pasta / MARCA).read_text().strip()
+    except OSError:
+        return ""
 # (o Longshot baixa as ferramentas da montagem à parte, uns 520 MB: ficam dentro do port, para o desinstalador levar)
 BASE_FERRAMENTAS = APPDIR / "longshot" / "builder"
 
@@ -68,17 +135,10 @@ class Jogo:
 
     @property
     def serve(self) -> bool:
-        """Uma pasta montada pela mesma versão da base e já com o renderizador do port (uma instalação anterior): entra
-        como está. Montada com o renderizador do Longshot, os shaders preparados nela não servem para o nosso e a
-        primeira abertura levaria horas; ela é montada de novo, como as de outra versão."""
-        if self.tipo != "pasta" or self.versao != f"{BASE_NOME} {BASE_VERSAO}":
-            return False
-        nosso = PACOTE / "renderizador" / "longshot_vk.so"
-        alvo = self.caminho / "bin" / "longshot_vk.so"
-        try:
-            return nosso.is_file() and alvo.is_file() and filecmp.cmp(alvo, nosso, shallow=False)
-        except OSError:
-            return False
+        """Uma pasta montada pelo port com a mesma base e o mesmo patch (uma instalação anterior): entra como está.
+        Montada pelo Longshot sozinho, o renderizador e os shaders preparados nela não são os do port (a primeira
+        abertura levaria horas); ela é montada de novo, como as de outra versão."""
+        return self.tipo == "pasta" and marca_da_pasta(self.caminho) == identidade_base()
 
     @property
     def refazer(self) -> bool:
@@ -155,6 +215,12 @@ def exefs_da_pasta(pasta: Path) -> Path | None:
 def procurar_jogos(lugares: list[Path] | None = None, profundidade: int = 4) -> list[Jogo]:
     """Os .nup grandes e as pastas já montadas pelo Hookshot, nas pastas de costume (sem entrar em pastas ocultas)."""
     achados: dict[Path, Jogo] = {}
+    # a pasta do jogo de uma instalação anterior do port (a busca não entra nas pastas zelda-oot-deck)
+    if lugares is None and ler_config().get("jogo"):
+        anterior = Path(ler_config()["jogo"])
+        v = versao_da_pasta(anterior)
+        if v:
+            achados[anterior.resolve()] = Jogo(anterior, 0, "pasta", v)
     for raiz in lugares or lugares_de_busca():
         base = len(raiz.parts)
         for pasta, subpastas, arquivos in os.walk(raiz, onerror=lambda e: None):
@@ -285,8 +351,12 @@ class Instalacao(threading.Thread):
     # ---- o Hookshot oficial
     def _hookshot(self) -> Path:
         """Baixa o Longshot oficial (soma conferida), extrai e põe nele o patch da saída de 800 linhas."""
-        pasta = APPDIR / "longshot"
+        # cada versão da base na sua pasta: um builder de outra versão já extraído não é reaproveitado por engano
+        pasta = APPDIR / "longshot" / BASE_VERSAO
         pasta.mkdir(parents=True, exist_ok=True)
+        for velho in (APPDIR / "longshot").iterdir():   # (as de antes: o AppImage e o builder soltos, outras versões)
+            if velho.name not in (BASE_VERSAO, "builder"):
+                shutil.rmtree(velho, ignore_errors=True) if velho.is_dir() else velho.unlink(missing_ok=True)
         app = pasta / BASE_ARQUIVO
 
         def confere() -> bool:
@@ -298,42 +368,55 @@ class Instalacao(threading.Thread):
                     h.update(bloco)
             return h.hexdigest() == BASE_SHA256
 
-        if not confere():
+        falhas = []
+        for url in urls_da_base():
+            if confere():
+                break
             parte = app.with_suffix(".parte")
-            pedido = urllib.request.Request(BASE_URL, headers={"User-Agent": "deckport-zelda-oot"})
-            with urllib.request.urlopen(pedido, timeout=60) as r, open(parte, "wb") as f:
-                lido = 0
-                while True:
-                    self._para()
-                    bloco = r.read(1 << 20)
-                    if not bloco:
-                        break
-                    f.write(bloco)
-                    lido += len(bloco)
-                    self._avanca(1, 0.9 * lido / BASE_BYTES)
-            parte.replace(app)
+            try:
+                pedido = urllib.request.Request(url, headers={"User-Agent": "deckport-zelda-oot"})
+                with urllib.request.urlopen(pedido, timeout=60) as r, open(parte, "wb") as f:
+                    lido = 0
+                    while True:
+                        self._para()
+                        bloco = r.read(1 << 20)
+                        if not bloco:
+                            break
+                        f.write(bloco)
+                        lido += len(bloco)
+                        self._avanca(1, 0.9 * lido / BASE_BYTES)
+                parte.replace(app)
+            except OSError as e:
+                falhas.append(f"{url}: {e}")
+                parte.unlink(missing_ok=True)
+                continue
             if not confere():
                 app.unlink(missing_ok=True)
-                raise RuntimeError("o Longshot baixado não confere com o original (soma SHA-256 diferente)")
+                falhas.append(f"{url}: soma SHA-256 diferente")
+        if not confere():
+            raise RuntimeError("não deu para baixar o Longshot " + BASE_VERSAO + " (" + "; ".join(falhas) + ")")
         app.chmod(0o755)
         # extraído: o Python dele (com o zstandard) roda as ferramentas do port, e a montagem roda sem FUSE
         raiz = pasta / "squashfs-root"
-        if not (raiz / "AppRun").exists():
+        fontes = raiz / "usr" / "share" / "longshot"
+        marca = raiz / ".deckport"
+        try:
+            pronta = marca.read_text().strip() == identidade_base()
+        except OSError:
+            pronta = False
+        if not pronta:   # extraído de novo: as fontes limpas antes do patch
             shutil.rmtree(raiz, ignore_errors=True)
             subprocess.run([str(app), "--appimage-extract"], cwd=pasta, check=True, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
-        # a saída 1424x800 também no perfil portátil (o Longshot só a aceita no modo dock); sem ele a imagem sai em
-        # 2048x1152 e o jogo gasta o dobro de memória de vídeo
-        subprocess.run([self._python(raiz), "-I", str(APPDIR / "patches" / "patch_800p.py"),
-                        str(raiz / "usr" / "share" / "longshot")], check=True)
-        # o renderizador do port no lugar do do builder: a montagem já põe o nosso na pasta e prepara os shaders com ele.
-        # O carimbo do cache de programas muda com o renderizador (deckport-grid-2) e com o modo dos task shaders; com o
-        # do Longshot o cache não servia e a primeira abertura preparava tudo de novo (820 de 38809 programas em 6,5 min)
-        vk = raiz / "usr" / "lib" / "longshot" / "longshot_vk.so"
-        original = vk.with_name("longshot_vk.so.longshot")
-        if vk.exists() and not original.exists():
-            shutil.copy2(vk, original)
-        shutil.copy2(APPDIR / "renderizador" / "longshot_vk.so", vk)
+            # a saída 1424x800 também no perfil portátil (o Longshot só a aceita no modo dock); sem ele a imagem sai
+            # em 2048x1152 e o jogo gasta o dobro de memória de vídeo
+            subprocess.run([self._python(raiz), "-I", str(PACOTE / "patches" / "patch_800p.py"), str(fontes)],
+                           check=True)
+            # o renderizador do port: o builder o compila destas fontes e prepara os shaders com ele. (O carimbo do cache
+            # de programas muda com o renderizador e com o modo dos task shaders: com o do Longshot a primeira abertura
+            # preparava tudo de novo, 820 de 38809 programas em 6,5 min)
+            aplicar_patch(PACOTE / "patches" / BASE_PATCH, fontes)
+            marca.write_text(identidade_base())
         self._avanca(1, 1.0)
         return raiz
 
@@ -401,28 +484,20 @@ class Instalacao(threading.Thread):
         shutil.rmtree(trabalho, ignore_errors=True)
         print("montagem: %.0f min" % ((time.time() - ini) / 60))
 
-    # ---- o renderizador do port no lugar do do Hookshot
+    # ---- o renderizador do port: compilado pela montagem, das fontes com o patch; aqui só se confere e marca a pasta
     def _renderizador(self, jogo: Path):
-        nosso = APPDIR / "renderizador" / "longshot_vk.so"
-        if not nosso.is_file():
-            raise RuntimeError("falta o renderizador do port no pacote (renderizador/longshot_vk.so)")
         alvo = jogo / "bin" / "longshot_vk.so"
-        guardado = jogo / "bin" / "longshot_vk.so.longshot"
-        do_builder = APPDIR / "longshot" / "squashfs-root" / "usr" / "lib" / "longshot" / "longshot_vk.so.longshot"
-        if not guardado.exists():   # o original fica ao lado, para desinstalar
-            if alvo.exists() and not filecmp.cmp(alvo, nosso, shallow=False):
-                shutil.copy2(alvo, guardado)
-            elif do_builder.exists():   # (montada por nós: o nosso já está lá; o original vem do builder)
-                shutil.copy2(do_builder, guardado)
-        if alvo.exists() and filecmp.cmp(alvo, nosso, shallow=False):
-            return
-        novo = alvo.with_suffix(".so.novo")
-        shutil.copy2(nosso, novo)
-        novo.replace(alvo)
+        try:
+            dados = alvo.read_bytes()
+        except OSError:
+            raise RuntimeError(f"a montagem não deixou o renderizador em {alvo}")
+        if b"RX_VK_READBACK_SKIP" not in dados:   # (uma variável que só o renderizador do port lê)
+            raise RuntimeError(f"o renderizador em {alvo} não é o do port: o patch não entrou na montagem")
+        (jogo / MARCA).write_text(identidade_base() + "\n")
 
     # ---- os mods, gerados dos arquivos do jogo
     def _ferramenta(self, py: str, nome: str, args: list[str], etapa: int, a: float, b: float, padrao: str = ""):
-        self.proc = subprocess.Popen([py, "-I", str(APPDIR / "deck" / "ferramentas" / nome), *args],
+        self.proc = subprocess.Popen([py, "-I", str(PACOTE / "deck" / "ferramentas" / nome), *args],
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
                                      start_new_session=True)
         ultimas = []
@@ -500,8 +575,14 @@ class Instalacao(threading.Thread):
                     raise RuntimeError(f"a pasta foi montada pelo {self.jogo.versao} e não guarda os arquivos do jogo "
                                        f"para montar de novo; use o .nup")
                 jogo = self.raiz / "jogo"
-                if versao_da_pasta(jogo) == f"{BASE_NOME} {BASE_VERSAO}":   # já montado numa instalação anterior
+                if marca_da_pasta(jogo) == identidade_base():   # já montado numa instalação anterior
                     self._avanca(2, 1.0)
+                elif self.jogo.tipo == "pasta" and self.jogo.caminho.resolve() == jogo.resolve():
+                    # a pasta de uma instalação anterior (outra base): montada ao lado e trocada no fim
+                    novo = self.raiz / "jogo-novo"
+                    shutil.rmtree(novo, ignore_errors=True)
+                    self._montar(hookshot, novo)
+                    trocar_jogo(self.raiz, novo, jogo)
                 else:
                     self._montar(hookshot, jogo)
             self._avanca(2, 1.0)
@@ -520,9 +601,9 @@ class Instalacao(threading.Thread):
             CAMINHOS.parent.mkdir(parents=True, exist_ok=True)
             CAMINHOS.write_text(f'ZELDA_BASE="{self.raiz}"\nZELDA_JOGO="{jogo}"\nZELDA_SCRIPTS="{APPDIR / "deck"}"\n')
             c = ler_config()
-            c.update({"versao": (PACOTE / "VERSAO").read_text().strip() if (PACOTE / "VERSAO").exists() else "",
+            c.update({"versao": versao_do_pacote(),
                       "raiz": str(self.raiz), "jogo": str(jogo), "jogo_de_fora": self.jogo.serve,
-                      "base": f"{BASE_NOME} {BASE_VERSAO}"})
+                      "base": identidade_base()})
             gravar_config(c)
             self._avanca(6, 0.4)
             self.criar_atalho(self.raiz, APPDIR)

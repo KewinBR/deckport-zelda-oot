@@ -35,10 +35,31 @@ fi
 touch /tmp/zelda-abrindo
 mkdir -p "$base/logs"
 log=$base/logs/zelda-$(date +%Y%m%d-%H%M%S).log
-exec > "$log" 2>&1
+exec >> "$log" 2>&1   # >>: a reabertura depois de atualizar cai no mesmo segundo e no mesmo arquivo
 ln -sf "$log" "$base/ultima.log"
 echo "início $(date '+%F %T')"
 unset LD_PRELOAD LD_LIBRARY_PATH
+# Atualização automática (2026-11-15, só na instalação pública: o instalador/atualizar.py fica ao lado de deck/). Antes do
+# jogo: põe no lugar a versão já baixada (segundos) e, se trocou o lançador ou a pasta do jogo, abre de novo com os
+# arquivos novos. Em segundo plano, fora da sessão do jogo: vê se há versão nova, baixa e, se ela muda a base, monta o
+# jogo de novo numa pasta ao lado depois que o jogo fechar e com o Deck na tomada. ZELDA_ATUALIZAR=0 desliga.
+atualizador=$(dirname "$scripts")/instalador/atualizar.py
+if [[ ${ZELDA_ATUALIZAR:-1} != 0 && -f $atualizador ]]; then
+    logatu=$base/logs/atualizacao.log
+    python3 "$atualizador" aplicar >> "$logatu" 2>&1
+    if [[ $? == 10 && -z ${ZELDA_REABERTO:-} ]]; then
+        echo "atualizado (ver $logatu), abrindo de novo com a versão nova"
+        rm -f /tmp/zelda-abrindo
+        ZELDA_REABERTO=1 exec bash "$(dirname "$scripts")/rodar-zelda.sh" "$@"
+    fi
+    # A unidade nasce com o ambiente do systemd do usuário, não com o deste processo: passa o que muda os caminhos.
+    amb=(); for v in HOME XDG_CONFIG_HOME XDG_DATA_HOME ZELDA_CONF ZELDA_ATUALIZAR ZELDA_RELEASE_URL; do
+        [[ -n ${!v:-} ]] && amb+=("--setenv=$v=${!v}")
+    done
+    systemd-run --user --collect --quiet --unit=zelda-oot-deck-atualizar -p Nice=19 -p IOSchedulingClass=idle \
+        "${amb[@]}" -p StandardOutput=append:"$logatu" -p StandardError=append:"$logatu" \
+        python3 "$atualizador" verificar 2>/dev/null || true
+fi
 [[ -f $jogo/image.bin ]] || { echo "falta o jogo compilado em $jogo"; exit 1; }
 
 # Experimento: VAR=valor por linha em ~/zelda-oot/exp-env, lido uma vez e apagado.

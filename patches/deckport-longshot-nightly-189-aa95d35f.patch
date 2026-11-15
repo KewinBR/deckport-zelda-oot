@@ -1,0 +1,3222 @@
+diff --git a/gpu/third_party/suyu/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/gpu/third_party/suyu/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index d13cd11f..a472edb3 100644
+--- a/gpu/third_party/suyu/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/gpu/third_party/suyu/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -13,6 +13,7 @@
+ #include <string_view>
+ #include <vector>
+ #include "common/common_types.h"
++#include "shader_recompiler/frontend/ampere/program_address_map.h"
+ 
+ namespace Shader::Ampere {
+ 
+@@ -71,13 +72,22 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
+             if (relocation.target > index) return fail(index, "native branch or call leaves captured program");
+             const u32 target = result.source_instruction_offsets[static_cast<size_t>(relocation.target)];
+             const s64 relative = s64{address_of(target)} - address_of(relocation.output_index) - 8;
+-            if (relative < -0x800000 || relative > 0x7fffff) return fail(index, "lowered branch distance");
+-            result.instructions[relocation.output_index] |= (static_cast<u64>(relative) & 0xffffff) << 20;
++            u64& word = result.instructions[relocation.output_index];
++            if (relative < -0x800000 || relative > 0x7fffff) {
++                // (longshot) past the reach of BRA and CAL (a 24-bit offset, 8 MiB either way): their absolute forms,
++                // JMP and JCAL, with the target's address in 32 bits (20-51), as gpu/vk/eden's lowering
++                const u64 op = word >> 52;
++                if (op != 0xe24 && op != 0xe26) return fail(index, "lowered branch distance");
++                word = (word & ~(u64{0xfff} << 52)) | (u64{op == 0xe24 ? 0xe21U : 0xe22U} << 52) |
++                       (u64{address_of(target)} << 20);
++                continue;
++            }
++            word |= (static_cast<u64>(relative) & 0xffffff) << 20;
+         }
+         result.source_size = (index + 1) * sizeof(Instruction);
+         return result;
+     };
+-    if (code.empty() || code.size() > 65536) return fail(0, "invalid native program size");
++    if (code.empty() || code.size() > MaximumNativeInstructions) return fail(0, "invalid native program size");
+     for (u32 index = 0; index < code.size(); ++index) {
+         auto insn = code[index];
+         result.source_instruction_offsets.push_back(static_cast<u32>(result.instructions.size()));
+@@ -2138,11 +2148,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
+             const s64 relative = static_cast<s64>(raw << 14) >> 14;
+             if (s64{index} * 16 + 16 + relative != 0)
+                 return fail(index, "native computed branch relative base");
+-            const s64 offset = -s64{address_of(static_cast<u32>(result.instructions.size()))} - 8;
+-            if (offset < -0x800000) return fail(index, "native computed branch range");
++            // (longshot) past BRX's 8 MiB reach back to the table's base: JMX, the value plus -8 alone (gpu/vk/eden's lowering)
++            const s64 back = -s64{address_of(static_cast<u32>(result.instructions.size()))} - 8;
++            const bool absolute = back < -0x800000;
++            const s64 offset = absolute ? -8 : back;
+             const u32 source = opcode == 0x958 ? uniform_register(insn.Bits(24, 8)) : insn.Bits(24, 8);
+             if (source == ~0U) return fail(index, "native uniform computed branch source");
+-            emit(0xe25000000000000fULL | predicate | (u64{source} << 8) |
++            emit((absolute ? 0xe20000000000000fULL : 0xe25000000000000fULL) | predicate | (u64{source} << 8) |
+                  ((static_cast<u64>(offset) & 0xffffff) << 20));
+             computed_branch = true;
+             break;
+diff --git a/gpu/third_party/suyu/shader_recompiler/frontend/ampere/program_address_map.h b/gpu/third_party/suyu/shader_recompiler/frontend/ampere/program_address_map.h
+index bee32a82..01bec57c 100644
+--- a/gpu/third_party/suyu/shader_recompiler/frontend/ampere/program_address_map.h
++++ b/gpu/third_party/suyu/shader_recompiler/frontend/ampere/program_address_map.h
+@@ -8,6 +8,8 @@
+ 
+ namespace Shader::Ampere {
+ constexpr u64 NativeAddressMapMagic = 0x50414d4e4544454eULL;
++// (longshot) The most native instructions a program may have: as gpu/vk/eden's copy of this file says
++constexpr u32 MaximumNativeInstructions = (16u << 20) / 16;
+ inline bool HasNativeAddressMap(std::span<const u64> code) {
+     return code.size() >= 2 && code.back() == NativeAddressMapMagic;
+ }
+@@ -20,7 +22,7 @@ inline void AppendNativeAddressMap(std::vector<u64>& code, std::span<const u32>
+ inline std::optional<u32> NativeProgramAddress(std::span<const u64> code, u32 address) {
+     if (!HasNativeAddressMap(code) || address % 16) return {};
+     const u64 count = code[code.size() - 2];
+-    if (!count || count > 65536 || count + 2 > code.size() || address / 16 >= count) return {};
++    if (!count || count > MaximumNativeInstructions || count + 2 > code.size() || address / 16 >= count) return {};
+     const size_t start = code.size() - static_cast<size_t>(count) - 2;
+     const u64 target = code[start + address / 16];
+     if (target < 0x50 || target >= start * 8 || target % 8 || target % 32 == 0) return {};
+diff --git a/gpu/third_party/suyu/shader_recompiler/frontend/ampere/program_capture.h b/gpu/third_party/suyu/shader_recompiler/frontend/ampere/program_capture.h
+index 7e308de4..040d90d8 100644
+--- a/gpu/third_party/suyu/shader_recompiler/frontend/ampere/program_capture.h
++++ b/gpu/third_party/suyu/shader_recompiler/frontend/ampere/program_capture.h
+@@ -8,7 +8,8 @@ namespace Shader::Ampere {
+ class ProgramCaptureState {
+ public:
+     enum class Result { Continue, Complete, InvalidTarget };
+-    static constexpr u32 MaximumInstructions = 65536;
++    // (longshot: a target past the largest program, program_address_map.h, was 65,536 instructions, 1 MiB)
++    static constexpr u32 MaximumInstructions = MaximumNativeInstructions;
+ 
+     Result Observe(const Instruction& instruction, u32 index) {
+         const u32 opcode = instruction.Bits(0, 12);
+diff --git a/gpu/vk/commit_room.h b/gpu/vk/commit_room.h
+new file mode 100644
+index 00000000..d7343214
+--- /dev/null
++++ b/gpu/vk/commit_room.h
+@@ -0,0 +1,90 @@
++// (longshot) The commit Windows still has room for, apart from Windows so that tests/test_commit_room.py can run it.
++//
++// The textures' budget gives commit back below a reserve under Windows' commit limit (vk_texture.cpp's commit rule). That limit
++// is RAM plus the page files as they are now, and a page file Windows manages grows when the commit nears it: the limit read
++// at one moment is not the one a commit fails at. A 32 GB PC whose page file was 2 GB at the start played 90 minutes with
++// 0.3 to 2.5 GB left under the limit of the moment while Windows raised that limit by more than 12 GB and refused no commit;
++// the rule took 292,526 textures out of the cache in that time, down to a budget of 0, and the player saw the textures go
++// black and come back. What the page files can still grow by counts as room.
++#pragma once
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++
++namespace commit_room {
++
++/// One page file, in bytes: its size now, the most Windows lets it reach, and its drive's letter ('C'; 0: not known)
++struct PageFile {
++    uint64_t size, max_size;
++    char drive;
++};
++
++/// What the page files can still grow by: each up to its maximum, and those of one drive together no further than the drive
++/// has free (drive_free: bytes free on a drive by its letter; 0 where it cannot be read). A file of an unknown drive counts
++/// for nothing, as a file at its maximum does: with only such files the room is what is left under the limit now
++template <typename DriveFree>
++inline uint64_t growth(const PageFile* files, size_t n, DriveFree drive_free) {
++    uint64_t left[26];
++    bool read[26] = {};
++    uint64_t sum = 0;
++    for (size_t i = 0; i < n; i++) {
++        const PageFile& f = files[i];
++        if (f.drive < 'A' || f.drive > 'Z' || f.max_size <= f.size) continue;
++        const int d = f.drive - 'A';
++        if (!read[d]) read[d] = true, left[d] = drive_free(f.drive);
++        const uint64_t g = std::min(f.max_size - f.size, left[d]);
++        left[d] -= g;
++        sum = sum > UINT64_MAX - g ? UINT64_MAX : sum + g;
++    }
++    return sum;
++}
++
++/// The commit left before the limit Windows can reach: what is left under the limit now, and what the page files can grow by
++inline uint64_t headroom(uint64_t avail, uint64_t grow) { return avail > UINT64_MAX - grow ? UINT64_MAX : avail + grow; }
++
++/// Whether the growth is worth reading: only below the reserve, where the commit rule would act. Above it the answer is the same
++inline bool wants_growth(uint64_t avail, uint64_t reserve, bool counted) { return counted && reserve && avail < reserve; }
++
++/// A record of NtQuerySystemInformation's SystemPageFileInformationEx (0x90) on 64-bit Windows: the sizes in pages, the name
++/// a UNICODE_STRING (bytes, then the address of its UTF-16 text). 0x28 bytes
++struct Record {
++    uint32_t next, total, in_use, peak;
++    uint16_t name_bytes, name_room;
++    uint32_t pad;
++    uint64_t name;
++    uint32_t min_size, max_size;
++};
++static_assert(sizeof(Record) == 0x28 && offsetof(Record, name) == 0x18 && offsetof(Record, max_size) == 0x24);
++
++/// The drive letter in a page file's name ("\??\C:\pagefile.sys": the first letter with a colon after it), upper case; 0: none
++inline char drive_of(const char16_t* name, size_t chars) {
++    for (size_t i = 0; i + 1 < chars; i++) {
++        const char16_t c = name[i];
++        if (name[i + 1] != u':') continue;
++        if (c >= u'A' && c <= u'Z') return (char)c;
++        if (c >= u'a' && c <= u'z') return (char)(c - u'a' + u'A');
++    }
++    return 0;
++}
++
++/// The page files in what that query wrote (len bytes at buf, which stays at the address the query wrote it to: the names are
++/// addresses into it), at most cap of them. A record or a name that does not lie inside buf ends the list or loses its drive
++inline size_t page_files(const unsigned char* buf, size_t len, uint64_t page, PageFile* out, size_t cap) {
++    size_t n = 0, at = 0;
++    while (n < cap && at <= len && len - at >= sizeof(Record)) {
++        Record r;
++        std::memcpy(&r, buf + at, sizeof r);
++        PageFile f{(uint64_t)r.total * page, (uint64_t)r.max_size * page, 0};
++        const uint64_t lo = (uint64_t)(uintptr_t)buf, hi = lo + len;
++        if (r.name >= lo && r.name <= hi && r.name_bytes <= hi - r.name && r.name % alignof(char16_t) == 0)
++            f.drive = drive_of((const char16_t*)(uintptr_t)r.name, r.name_bytes / sizeof(char16_t));
++        out[n++] = f;
++        if (!r.next || r.next < sizeof(Record) || r.next > len - at) break;
++        at += r.next;
++    }
++    return n;
++}
++
++}  // namespace commit_room
+diff --git a/gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h b/gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+index 97a86022..bc45c6fd 100644
+--- a/gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
++++ b/gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.h
+@@ -13,6 +13,7 @@
+ #include <string_view>
+ #include <vector>
+ #include "common/common_types.h"
++#include "shader_recompiler/frontend/ampere/program_address_map.h"
+ #ifndef LONGSHOT_ENV_H   // (env_on: the switches' one rule)
+ #include "longshot_env.h"
+ #endif
+@@ -169,13 +170,23 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             if (relocation.target > index) return fail(index, "native branch or call leaves captured program");
+             const u32 target = result.source_instruction_offsets[static_cast<size_t>(relocation.target)];
+             const s64 relative = s64{address_of(target)} - address_of(relocation.output_index) - 8;
+-            if (relative < -0x800000 || relative > 0x7fffff) return fail(index, "lowered branch distance");
+-            result.instructions[relocation.output_index] |= (static_cast<u64>(relative) & 0xffffff) << 20;
++            u64& word = result.instructions[relocation.output_index];
++            if (relative < -0x800000 || relative > 0x7fffff) {
++                // (longshot) past the reach of BRA and CAL (a 24-bit offset, 8 MiB either way: about 786,000 lowered
++                // instructions): their absolute forms, JMP and JCAL, which hold the target's address in 32 bits (20-51;
++                // the frontend reads them so, IsAbsoluteJump). The predicate and the flow test stay as they are
++                const u64 op = word >> 52;
++                if (op != 0xe24 && op != 0xe26) return fail(index, "lowered branch distance");
++                word = (word & ~(u64{0xfff} << 52)) | (u64{op == 0xe24 ? 0xe21U : 0xe22U} << 52) |
++                       (u64{address_of(target)} << 20);
++                continue;
++            }
++            word |= (static_cast<u64>(relative) & 0xffffff) << 20;
+         }
+         result.source_size = (index + 1) * sizeof(Instruction);
+         return result;
+     };
+-    if (code.empty() || code.size() > 65536) return fail(0, "invalid native program size");
++    if (code.empty() || code.size() > MaximumNativeInstructions) return fail(0, "invalid native program size");
+     // (longshot) A shared memory store (STS) not yet followed by a barrier: an LDS after it may read what another lane of the
+     // warp stored (see LDS below)
+     bool shared_store_pending = false;
+@@ -3324,11 +3335,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32
+             const s64 relative = static_cast<s64>(raw << 14) >> 14;
+             if (s64{index} * 16 + 16 + relative != 0)
+                 return fail(index, "native computed branch relative base");
+-            const s64 offset = -s64{address_of(static_cast<u32>(result.instructions.size()))} - 8;
+-            if (offset < -0x800000) return fail(index, "native computed branch range");
++            // (longshot) BRX goes to the table's value plus its own address plus its offset, which reaches back only 8 MiB
++            // (24 bits). Past that, JMX: the value plus the offset alone, -8 (the frontend's AnalyzeBRX adds the 8 back)
++            const s64 back = -s64{address_of(static_cast<u32>(result.instructions.size()))} - 8;
++            const bool absolute = back < -0x800000;
++            const s64 offset = absolute ? -8 : back;
+             const u32 source = opcode == 0x958 ? uniform_register(insn.Bits(24, 8)) : insn.Bits(24, 8);
+             if (source == ~0U) return fail(index, "native uniform computed branch source");
+-            emit(0xe25000000000000fULL | predicate | (u64{source} << 8) |
++            emit((absolute ? 0xe20000000000000fULL : 0xe25000000000000fULL) | predicate | (u64{source} << 8) |
+                  ((static_cast<u64>(offset) & 0xffffff) << 20));
+             computed_branch = true;
+             break;
+diff --git a/gpu/vk/eden/shader_recompiler/frontend/ampere/program_address_map.h b/gpu/vk/eden/shader_recompiler/frontend/ampere/program_address_map.h
+index bee32a82..ad65281f 100644
+--- a/gpu/vk/eden/shader_recompiler/frontend/ampere/program_address_map.h
++++ b/gpu/vk/eden/shader_recompiler/frontend/ampere/program_address_map.h
+@@ -8,6 +8,12 @@
+ 
+ namespace Shader::Ampere {
+ constexpr u64 NativeAddressMapMagic = 0x50414d4e4544454eULL;
++// (longshot) The most native instructions a program may have, for the capture, the lowering and this map: as many as fit
++// in the largest code area the renderer reads (a control section whose area ends past 16 MiB is refused: control_end,
++// gpu/vk/vk_shader.cpp), 16 bytes each. The GPU has no instruction count of its own: Maxwell and Ampere address a program
++// by a 32-bit offset in its program region, and an Ampere BRA's offset has 50 bits. (65,536, 1 MiB, refused compute
++// program 79116b290d46542f, 0x104680 bytes of code, on every platform)
++constexpr u32 MaximumNativeInstructions = (16u << 20) / 16;
+ inline bool HasNativeAddressMap(std::span<const u64> code) {
+     return code.size() >= 2 && code.back() == NativeAddressMapMagic;
+ }
+@@ -20,7 +26,7 @@ inline void AppendNativeAddressMap(std::vector<u64>& code, std::span<const u32>
+ inline std::optional<u32> NativeProgramAddress(std::span<const u64> code, u32 address) {
+     if (!HasNativeAddressMap(code) || address % 16) return {};
+     const u64 count = code[code.size() - 2];
+-    if (!count || count > 65536 || count + 2 > code.size() || address / 16 >= count) return {};
++    if (!count || count > MaximumNativeInstructions || count + 2 > code.size() || address / 16 >= count) return {};
+     const size_t start = code.size() - static_cast<size_t>(count) - 2;
+     const u64 target = code[start + address / 16];
+     if (target < 0x50 || target >= start * 8 || target % 8 || target % 32 == 0) return {};
+diff --git a/gpu/vk/eden/shader_recompiler/frontend/ampere/program_capture.h b/gpu/vk/eden/shader_recompiler/frontend/ampere/program_capture.h
+index 7e308de4..040d90d8 100644
+--- a/gpu/vk/eden/shader_recompiler/frontend/ampere/program_capture.h
++++ b/gpu/vk/eden/shader_recompiler/frontend/ampere/program_capture.h
+@@ -8,7 +8,8 @@ namespace Shader::Ampere {
+ class ProgramCaptureState {
+ public:
+     enum class Result { Continue, Complete, InvalidTarget };
+-    static constexpr u32 MaximumInstructions = 65536;
++    // (longshot: a target past the largest program, program_address_map.h, was 65,536 instructions, 1 MiB)
++    static constexpr u32 MaximumInstructions = MaximumNativeInstructions;
+ 
+     Result Observe(const Instruction& instruction, u32 index) {
+         const u32 opcode = instruction.Bits(0, 12);
+diff --git a/gpu/vk/linux_pressure.h b/gpu/vk/linux_pressure.h
+new file mode 100644
+index 00000000..472e5ec0
+--- /dev/null
++++ b/gpu/vk/linux_pressure.h
+@@ -0,0 +1,187 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// (longshot) Linux memory pressure (MemAvailable and SwapFree in /proc/meminfo): the textures' budget, compaction, idle imports
++// and spare capture buffers give memory back before earlyoom or kernel direct reclaim acts. Nothing of Vulkan here:
++// tests/test_linux_pressure.py.
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++namespace linux_pressure {
++
++/// Default reserves on Linux:
++/// - kDefaultAvailReserve (1536 MB, RX_VK_AVAIL_RESERVE_MB): physical RAM available without swapping (MemAvailable). On a 16 GB
++///   Steam Deck OLED (~14.8 GB MemTotal), earlyoom sends SIGTERM at ~5% available (~750 MB) when swap is low, and direct reclaim
++///   stalls texture uploads once MemAvailable dips below ~1-1.5 GB. Every VMA block, staging arena, spare capture buffer and
++///   imported guest pool is kernel-pinned in physical RAM and cannot be swapped to zram or disk, so freeing them raises
++///   MemAvailable directly.
++/// - kDefaultCommitReserve (2560 MB, RX_VK_COMMIT_RESERVE_MB): MemAvailable + SwapFree, the Linux counterpart to Windows'
++///   ullAvailPageFile commit reserve.
++/// - kClearMargin (256 MB) and kBudgetFloor (512 MB): hysteresis and floor for texture_frame()'s budget hold.
++/// - kModuleDropMaxRam (20 GB): post-precompile VkShaderModule release runs by default only on <= 20 GB RAM systems (16 GB
++///   handhelds and PCs; RX_VK_DROP_MODULES=1 forces it on larger desktops, RX_VK_KEEP_MODULES=1 or RX_VK_DROP_MODULES=0 keeps them).
++constexpr uint64_t kDefaultAvailReserve = 1536ull << 20;
++constexpr uint64_t kDefaultCommitReserve = 2560ull << 20;
++constexpr uint64_t kClearMargin = 256ull << 20;
++constexpr uint64_t kBudgetFloor = 512ull << 20;
++constexpr uint64_t kModuleDropMaxRam = 20ull << 30;
++
++inline uint64_t reserve_from_env(const char* env, uint64_t def_bytes) {
++    if (!env || !*env) return def_bytes;
++    return (uint64_t)std::max(0, std::atoi(env)) << 20;
++}
++
++inline uint64_t avail_reserve(const char* env) { return reserve_from_env(env, kDefaultAvailReserve); }
++inline uint64_t commit_reserve(const char* env) { return reserve_from_env(env, kDefaultCommitReserve); }
++
++/// Parses MemAvailable and SwapFree (in bytes) from /proc/meminfo text, and optionally MemTotal and whether swap is configured
++/// (SwapTotal > 0 or SwapFree > 0). Returns false when MemAvailable is not present; SwapFree defaults to 0 when absent.
++inline bool parse_meminfo(const char* text, uint64_t* avail_bytes, uint64_t* swap_free_bytes, uint64_t* total_bytes = nullptr,
++                          bool* has_swap = nullptr) {
++    if (!text || !avail_bytes || !swap_free_bytes) return false;
++    *avail_bytes = 0;
++    *swap_free_bytes = 0;
++    if (total_bytes) *total_bytes = 0;
++    bool have_avail = false, seen_swap_total = false;
++    uint64_t swap_total = 0;
++    for (const char* p = text; *p;) {
++        const char* end = std::strchr(p, '\n');
++        const size_t len = end ? (size_t)(end - p) : std::strlen(p);
++        unsigned long long kb = 0;
++        if (len >= 13 && !std::memcmp(p, "MemAvailable:", 13) && std::sscanf(p + 13, "%llu", &kb) == 1) {
++            *avail_bytes = (uint64_t)kb << 10;
++            have_avail = true;
++        } else if (len >= 9 && !std::memcmp(p, "SwapFree:", 9) && std::sscanf(p + 9, "%llu", &kb) == 1) {
++            *swap_free_bytes = (uint64_t)kb << 10;
++        } else if (len >= 10 && !std::memcmp(p, "SwapTotal:", 10) && std::sscanf(p + 10, "%llu", &kb) == 1) {
++            swap_total = (uint64_t)kb << 10;
++            seen_swap_total = true;
++        } else if (total_bytes && len >= 9 && !std::memcmp(p, "MemTotal:", 9) && std::sscanf(p + 9, "%llu", &kb) == 1) {
++            *total_bytes = (uint64_t)kb << 10;
++        }
++        if (!end) break;
++        p = end + 1;
++    }
++    if (has_swap) *has_swap = !seen_swap_total || swap_total > 0 || *swap_free_bytes > 0;
++    return have_avail;
++}
++
++/// Reads MemAvailable and SwapFree (and optionally MemTotal and has_swap) from path (or /proc/meminfo on Linux). Off Linux, only
++/// an explicit path is read (for tests).
++inline bool read_meminfo(uint64_t* avail_bytes, uint64_t* swap_free_bytes, const char* path = nullptr,
++                         uint64_t* total_bytes = nullptr, bool* has_swap = nullptr) {
++#if !defined(__linux__)
++    if (!path || !*path) return false;
++#endif
++    const char* target = (path && *path) ? path : "/proc/meminfo";
++    FILE* f = std::fopen(target, "rb");
++    if (!f) return false;
++    char buf[4096];
++    const size_t n = std::fread(buf, 1, sizeof buf - 1, f);
++    std::fclose(f);
++    buf[n] = '\0';
++    return parse_meminfo(buf, avail_bytes, swap_free_bytes, total_bytes, has_swap);
++}
++
++/// How many bytes short of the reserves the system is: the larger of the physical-RAM shortfall (below avail_reserve_bytes) and,
++/// when swap is enabled (has_swap), the total-memory-plus-swap shortfall (below commit_reserve_bytes). 0 when both reserves are
++/// met or turned off (0).
++constexpr uint64_t shortfall(uint64_t avail_bytes, uint64_t swap_free_bytes,
++                             uint64_t avail_reserve_bytes = kDefaultAvailReserve,
++                             uint64_t commit_reserve_bytes = kDefaultCommitReserve,
++                             bool has_swap = true) {
++    const uint64_t avail_over = avail_reserve_bytes > avail_bytes ? avail_reserve_bytes - avail_bytes : 0;
++    const uint64_t total_free = avail_bytes <= UINT64_MAX - swap_free_bytes ? avail_bytes + swap_free_bytes : UINT64_MAX;
++    const uint64_t commit_over = has_swap && commit_reserve_bytes > total_free ? commit_reserve_bytes - total_free : 0;
++    return avail_over > commit_over ? avail_over : commit_over;
++}
++
++/// Whether post-precompile VkShaderModules should be let go at pipeline_cache_play(): off when keep_env (RX_VK_KEEP_MODULES) is
++/// on or drop_env (RX_VK_DROP_MODULES) is explicitly off ("0", "off", "false", "no"); on when drop_env is on or when the machine
++/// has <= kModuleDropMaxRam (20 GB) of physical RAM (16 GB handhelds and PCs) or already has a memory shortfall at start-up.
++/// 32-64 GB Linux desktops keep their modules by default so new pipeline variants in play never read the disk.
++inline bool should_drop_modules(uint64_t total_ram_bytes, uint64_t current_shortfall, const char* keep_env,
++                                const char* drop_env = nullptr) {
++    if (keep_env && *keep_env && std::strcmp(keep_env, "0") != 0 && std::strcmp(keep_env, "off") != 0 &&
++        std::strcmp(keep_env, "false") != 0 && std::strcmp(keep_env, "no") != 0)
++        return false;
++    if (drop_env && *drop_env) {
++        if (!std::strcmp(drop_env, "0") || !std::strcmp(drop_env, "off") || !std::strcmp(drop_env, "false") ||
++            !std::strcmp(drop_env, "no"))
++            return false;
++        return true;
++    }
++    return (total_ram_bytes > 0 && total_ram_bytes <= kModuleDropMaxRam) || current_shortfall > 0;
++}
++
++/// Hysteresis state for texture_frame()'s Linux memory-pressure budget hold:
++/// - Enters pressure when shortfall(avail, swap_free, avail_res, commit_res, has_swap) > 0, capturing the texture total at entry
++///   (baseline_total = total_bytes) and holding held_budget = max(floor_bytes, baseline_total - over).
++/// - While active, if shortfall grows (MemAvailable drops further), held_budget steps down to max(floor_bytes, baseline_total - over),
++///   never ratcheting off the already-shrunk total_bytes on each frame while VMA compaction is still freeing blocks.
++/// - Once both reserves are cleared by kClearMargin (256 MB), steps held_budget back up by margin_bytes per sample and leaves
++///   active once it reaches baseline_total, preventing flapping or an immediate full-cut regrowth spike.
++struct PressureHold {
++    bool active = false;
++    uint64_t baseline_total = 0;
++    uint64_t held_budget = UINT64_MAX;
++    uint64_t last_over = 0;
++
++    constexpr uint64_t step(uint64_t total_bytes, uint64_t avail_bytes, uint64_t swap_free_bytes,
++                            uint64_t avail_res = kDefaultAvailReserve, uint64_t commit_res = kDefaultCommitReserve,
++                            uint64_t margin_bytes = kClearMargin, uint64_t floor_bytes = kBudgetFloor,
++                            bool has_swap = true) {
++        const uint64_t over = shortfall(avail_bytes, swap_free_bytes, avail_res, commit_res, has_swap);
++        if (!active) {
++            if (!over) {
++                last_over = 0;
++                return UINT64_MAX;
++            }
++            active = true;
++            baseline_total = total_bytes;
++            last_over = over;
++            const uint64_t cut = baseline_total > over ? baseline_total - over : 0;
++            held_budget = std::max(cut, floor_bytes);
++            return held_budget;
++        }
++        const uint64_t clear_avail = avail_res ? avail_res + margin_bytes : 0;
++        const uint64_t clear_commit = commit_res ? commit_res + margin_bytes : 0;
++        if (shortfall(avail_bytes, swap_free_bytes, clear_avail, clear_commit, has_swap) == 0) {
++            if (margin_bytes && held_budget <= UINT64_MAX - margin_bytes && held_budget + margin_bytes < baseline_total) {
++                held_budget += margin_bytes;
++                last_over = baseline_total > held_budget ? baseline_total - held_budget : 0;
++                return held_budget;
++            }
++            active = false;
++            baseline_total = 0;
++            held_budget = UINT64_MAX;
++            last_over = 0;
++            return UINT64_MAX;
++        }
++        if (over > last_over) {
++            last_over = over;
++            const uint64_t cut = baseline_total > over ? baseline_total - over : 0;
++            held_budget = std::min(held_budget, std::max(cut, floor_bytes));
++        }
++        return held_budget;
++    }
++};
++
++/// How many bytes of idle unmirrored guest-pool imports imports_give_back() should unpin under a Linux memory shortfall,
++/// counting imports already queued for destruction (pending_dead_bytes) as given back.
++constexpr uint64_t import_want(uint64_t shortfall_bytes, uint64_t pending_dead_bytes) {
++    return shortfall_bytes > pending_dead_bytes ? shortfall_bytes - pending_dead_bytes : 0;
++}
++
++/// What imports_give_back() may still unpin in this pressure episode: want, at most the deepest shortfall of the episode less what
++/// it has unpinned for it already. The texture cut, the staging arenas and malloc_trim cover the same bytes, and asking for the
++/// whole shortfall again at every sample unpinned the idle imports over and over while the episode lasted
++constexpr uint64_t episode_want(uint64_t want, uint64_t deepest_shortfall, uint64_t given_in_episode) {
++    const uint64_t room = deepest_shortfall > given_in_episode ? deepest_shortfall - given_in_episode : 0;
++    return want < room ? want : room;
++}
++
++} // namespace linux_pressure
+diff --git a/gpu/vk/vk_deckport_menu.h b/gpu/vk/vk_deckport_menu.h
+new file mode 100644
+index 00000000..72760583
+--- /dev/null
++++ b/gpu/vk/vk_deckport_menu.h
+@@ -0,0 +1,697 @@
++// (Deckport) O menu do port no visual do menu de Sistema do jogo: abas em cima (L1/R1), coluna de seções à esquerda,
++// pergaminho com as opções à direita, dicas de botão no rodapé. Desenho aprovado pelo Kewin em 2026-11-10
++// (projetos/zelda-oot/menu/menu-deckport.html no repo steam-deck). Ocupa a tela inteira, na resolução da janela.
++// Desenhado com o Dear ImGui da v2.1.0 (fontes do próprio jogo: ui::Fonts). Incluído em vk_menu.cpp, dentro do
++// namespace anônimo, antes do draw_menu: usa as opções do
++// Hookshot (opts, rows, save, restart_state) e as do Deckport (opts.dp_*, linhas TAB_DECKPORT, gravadas no mesmo ini).
++// As opções que mudam mods ou variáveis da abertura (texturas, grama, distância, sombras, idioma) valem ao reiniciar:
++// "Aplicar e reiniciar" grava, deixa o arquivo deckport_reiniciar ao lado do ini e fecha o jogo; o rodar-zelda.sh vê o
++// arquivo e abre o jogo de novo com as escolhas novas. RX_VK_DECKPORT_MENU=0 volta ao menu do Hookshot.
++#pragma once
++
++namespace dp {
++
++bool on() {
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("RX_VK_DECKPORT_MENU");
++        v = !e || atoi(e) != 0;
++    }
++    return v != 0;
++}
++
++// ---------------------------------------------------------------- o modelo
++struct Choice { const char* label; int v; };
++enum Kind { K_VALUE, K_INFO, K_ACTION };
++enum Action { A_NONE, A_RESTART, A_QUIT };
++struct Item {
++    const char* name;
++    int* value;                      // (nullptr: informação ou ação)
++    std::vector<Choice> ch;
++    const char* help;
++    Kind kind = K_VALUE;
++    bool restart = false;            // (vale ao reiniciar)
++    bool preset = false;             // (faz parte da predefinição: mexer vira Personalizado)
++    const char* (*gain)(int idx) = nullptr;   // (ganho medido no Deck, para o valor escolhido)
++    Action action = A_NONE;
++    const char* info = nullptr;      // (K_INFO: o valor mostrado)
++};
++enum SecType { S_LIST, S_PRESET, S_MAP, S_ABOUT };
++struct Section { const char* name; const char* title; SecType type; std::vector<Item> items; };
++struct Tab { const char* name; std::vector<Section> secs; };
++
++int lang = 0;   // (índice em kLangs: o language.txt ao lado do jogo)
++int lang_start = 0;
++struct Lang { const char* code; const char* name; };
++const Lang kLangs[] = {{"pt-BR", "Português (Brasil)"}, {"en-US", "English (US)"}, {"en-GB", "English (UK)"},
++                       {"es-419", "Español (Latinoamérica)"}, {"es", "Español (España)"}, {"fr", "Français"},
++                       {"fr-CA", "Français (Canada)"}, {"de", "Deutsch"}, {"it", "Italiano"}, {"nl", "Nederlands"},
++                       {"ru", "Russo"}, {"ja", "Japonês"}, {"ko", "Coreano"}, {"zh-Hans", "Chinês simplificado"}, {"zh-Hant", "Chinês tradicional"}};
++// (os nomes em escrita não latina ficam em português: a fonte do menu só tem o alfabeto latino)
++constexpr int kLangN = sizeof kLangs / sizeof kLangs[0];
++
++// predefinições: resolução interna (valor do Hookshot), distância, grama, sombras, texturas
++const char* const kPresets[] = {"Qualidade", "Equilibrado", "Desempenho", "Bateria", "Personalizado"};
++const int kPresetVals[4][5] = {{1, 4, 2, 0, 0}, {2, 2, 0, 1, 1}, {3, 1, 0, 2, 1}, {4, 0, 0, 2, 1}};
++int* preset_fields[5] = {&opts.resolution, &opts.dp_distance, &opts.dp_grass, &opts.dp_shadows, &opts.dp_textures};
++
++const char* g_preset(int i) { return i == 1 ? "Medido no castelo: 19 a 20 fps, 6,5 GB livres" : nullptr; }
++const char* g_shadows(int i) { return i == 1 ? "Medido no castelo: 300 MB a menos de memória de vídeo" : nullptr; }
++const char* g_textures(int i) { return i == 1 ? "Medido: 6,2 GB a menos de texturas" : "Medido: 2,9 GB a menos que o original"; }
++const char* g_distance(int i) { return i == 2 ? "Medido na Cidadela: 18,5 para 19,8 fps" : nullptr; }
++
++std::vector<Tab> tabs;
++std::vector<Choice> range(int lo, int hi, int step, const char* fmt) {
++    std::vector<Choice> c;
++    static std::deque<std::string> keep;   // (os textos ficam vivos enquanto o menu existir; deque: não muda de lugar)
++    for (int v = lo; v <= hi; v += step) {
++        char b[32];
++        snprintf(b, sizeof b, fmt, v);
++        keep.emplace_back(b);
++    }
++    size_t at = keep.size() - (size_t)((hi - lo) / step + 1);
++    for (int v = lo; v <= hi; v += step) c.push_back({keep[at++].c_str(), v});
++    return c;
++}
++
++void build() {
++    if (!tabs.empty()) return;
++    const std::vector<Choice> onoff = {{"Desligado", 0}, {"Ligado", 1}};
++    const std::vector<Choice> noyes = {{"Não", 0}, {"Sim", 1}};
++    std::vector<Choice> langs;
++    for (int i = 0; i < kLangN; i++) langs.push_back({kLangs[i].name, i});
++
++    Item preset{"Predefinição", &opts.dp_preset, {{"Qualidade", 0}, {"Equilibrado", 1}, {"Desempenho", 2}, {"Bateria", 3}},
++                "Ajusta de uma vez a resolução e o mundo. Equilibrado é o padrão do port."};
++    preset.gain = g_preset;
++    Item res{"Resolução interna", &opts.resolution, {{"100% (800p)", 1}, {"75% (600p)", 2}, {"67% (536p)", 3}, {"50% (400p)", 4}},
++             "Tamanho em que o mundo 3D é desenhado antes de ir para a tela. A interface continua nítida."};
++    res.preset = true;
++    Item sharp{"Nitidez", &opts.sharpness, range(0, 100, 10, "%d%%"),
++               "Realce de contorno depois da ampliação. Use mais quando a resolução interna estiver baixa."};
++    Item dist{"Distância de desenho", &opts.dp_distance, {{"Perto", 0}, {"Curta", 1}, {"Média", 2}, {"Longa", 3}, {"Original", 4}},
++              "Até onde a vegetação e os detalhes aparecem. Quanto mais perto, mais leve."};
++    dist.preset = dist.restart = true, dist.gain = g_distance;
++    Item grass{"Densidade da grama", &opts.dp_grass, {{"Baixa (50%)", 0}, {"Média (75%)", 1}, {"Original", 2}},
++               "Quantos tufos de grama o jogo planta por área. Hyrule Field é onde mais pesa."};
++    grass.preset = grass.restart = true;
++    Item shadows{"Sombras", &opts.dp_shadows, {{"Original", 0}, {"Média", 1}, {"Baixa", 2}},
++                 "Tamanho do mapa de sombra do sol. Na Média as sombras ficam quase iguais e mais leves."};
++    shadows.preset = shadows.restart = true, shadows.gain = g_shadows;
++    Item tex{"Texturas", &opts.dp_textures, {{"Altas (1024)", 0}, {"Médias (512)", 1}},
++             "Com Médias o castelo carregou e a Cidadela rodou inteira sem fechar. Altas pode faltar memória."};
++    tex.preset = tex.restart = true, tex.gain = g_textures;
++    Item fps{"Mostrar fps", &opts.show_fps, onoff, "Contador no canto superior direito. Vale na hora."};
++    Item speed{"Velocidade do jogo", &opts.realtime, {{"Por quadro", 0}, {"Tempo real", 1}},
++               "Abaixo de 30 fps: Tempo real mantém a velocidade do jogo; Por quadro deixa tudo mais lento junto."};
++    Item text{"Idioma do jogo", &lang, langs, "Idioma dos textos, legendas e vozes do jogo."};
++    text.restart = true;
++    Item tspeed{"Velocidade do texto", &opts.text_speed, {{"Normal", 0}, {"2x", 1}, {"4x", 2}, {"Instantânea", 3}},
++                "Quão rápido as falas aparecem na caixa de diálogo."};
++    Item mic{"Microfone", &opts.mic, {{"Desligado", 0}, {"Padrão do sistema", 1}},
++             "O que a ocarina ouve quando a opção de microfone do jogo está ligada."};
++    Item screen{"Resolução da tela", nullptr, {}, "O Deck sempre mostra 1280 x 800, em 16:10, sem barras pretas.", K_INFO};
++    screen.info = "1280 x 800";
++    Item gyro{"Mirar com giroscópio", &opts.gyro, onoff,
++              "Mexer o Deck move a mira do estilingue, do arco e do gancho, como no Switch."};
++    Item gsx{"Sensibilidade horizontal", &opts.gyro_sens_x, range(50, 300, 25, "%d%%"), "Quanto a mira anda para os lados."};
++    Item gsy{"Sensibilidade vertical", &opts.gyro_sens_y, range(50, 300, 25, "%d%%"), "Quanto a mira anda para cima e para baixo."};
++    Item gix{"Inverter horizontal", &opts.gyro_inv_x, noyes, "Troca esquerda e direita da mira."};
++    Item giy{"Inverter vertical", &opts.gyro_inv_y, noyes, "Troca cima e baixo da mira."};
++    Item rum{"Vibração", &opts.rumble, {{"Desligada", 0}, {"25%", 25}, {"50%", 50}, {"75%", 75}, {"100%", 100}, {"125%", 125}, {"150%", 150}},
++             "Força da vibração, em relação à do jogo."};
++    Item dz{"Zona morta do analógico", &opts.stick_dead_zone, {{"Padrão", 0}, {"5%", 1}, {"10%", 2}, {"15%", 3}, {"20%", 4}, {"30%", 5}},
++            "Quanto o analógico precisa sair do centro para contar. Aumente se o Link andar sozinho."};
++    Item cx{"Inverter câmera horizontal", &opts.invert_cam_x, noyes, "Troca esquerda e direita ao girar a câmera."};
++    Item cy{"Inverter câmera vertical", &opts.invert_cam_y, noyes, "Troca cima e baixo ao girar a câmera."};
++    Item prompts{"Ícones de botão", &opts.prompts, {{"Automático", 0}, {"Steam Deck", 5}, {"Switch", 1}, {"Xbox", 2}, {"PlayStation 5", 4}},
++                 "Os ícones de botão que o jogo mostra nos textos e menus."};
++    prompts.restart = true;
++    Item restart{"Reiniciar o jogo", nullptr, {}, "Fecha e abre o jogo de novo. Salve antes: aperte A duas vezes.", K_ACTION};
++    restart.action = A_RESTART;
++    Item quit{"Sair do jogo", nullptr, {}, "Volta para o Steam. Salve antes: aperte A duas vezes.", K_ACTION};
++    quit.action = A_QUIT;
++
++    tabs = {
++        {"Gráficos", {{"Predefinição", "Predefinição", S_PRESET, {preset}},
++                      {"Imagem", "Imagem", S_LIST, {screen, res, sharp}},
++                      {"Mundo", "Mundo", S_LIST, {dist, grass, shadows, tex}},
++                      {"Quadros", "Quadros por segundo", S_LIST, {fps, speed}}}},
++        {"Jogo", {{"Idioma", "Idioma", S_LIST, {text, tspeed}}, {"Som", "Som", S_LIST, {mic}}}},
++        {"Controle", {{"Botões", "Botões no Deck", S_MAP, {}},
++                      {"Giroscópio", "Giroscópio", S_LIST, {gyro, gsx, gsy, gix, giy}},
++                      {"Ajustes", "Ajustes", S_LIST, {rum, dz, cx, cy, prompts}}}},
++        {"Sobre", {{"Deckport", "Sobre o port", S_ABOUT, {}}, {"Sistema", "Sistema", S_LIST, {restart, quit}}}},
++    };
++}
++
++// ---------------------------------------------------------------- o estado
++int tab = 0, zone = 0;          // (zone 0: a coluna das seções; 1: as linhas do pergaminho)
++int sec[4] = {}, row[4] = {};
++const Item* armed = nullptr;    // (Reiniciar ou Sair esperando a segunda vez)
++bool msg_restarting = false;
++int start_vals[8];              // (o que esta abertura usa: distância, grama, sombras, texturas, ícones)
++int* restart_fields[] = {&opts.dp_distance, &opts.dp_grass, &opts.dp_shadows, &opts.dp_textures, &opts.prompts};
++constexpr int kRestartFields = 5;
++
++std::string game_dir() {
++    const std::string p = ini_path();
++    return p.substr(0, p.find_last_of("\\/") + 1);
++}
++void lang_read() {
++    lang = 0;
++    if (FILE* f = fopen((game_dir() + "language.txt").c_str(), "r")) {
++        char line[128];
++        while (fgets(line, sizeof line, f)) {
++            char* s = line;
++            while (*s == ' ' || *s == '\t') s++;
++            if (*s == '#' || *s == '\n' || *s == '\r' || !*s) continue;
++            size_t n = strcspn(s, " \t\r\n");
++            for (int i = 0; i < kLangN; i++)
++                if (strlen(kLangs[i].code) == n && !strncmp(s, kLangs[i].code, n)) lang = i;
++            break;
++        }
++        fclose(f);
++    }
++}
++void lang_write() {
++    const std::string path = game_dir() + "language.txt";
++    std::string out;
++    bool done = false;
++    if (FILE* f = fopen(path.c_str(), "r")) {
++        char line[256];
++        while (fgets(line, sizeof line, f)) {
++            const char* s = line;
++            while (*s == ' ' || *s == '\t') s++;
++            const bool code = *s && *s != '#' && *s != '\n' && *s != '\r';
++            if (code && !done) out += std::string(kLangs[lang].code) + "\n", done = true;
++            else if (!code) out += line;
++        }
++        fclose(f);
++    }
++    if (!done) out = std::string("# The game's language.\n\n") + kLangs[lang].code + "\n";
++    if (FILE* f = fopen(path.c_str(), "w")) fputs(out.c_str(), f), fclose(f);
++}
++bool started = false;
++void start() {
++    if (started) return;
++    started = true;
++    build();
++    lang_read();
++    lang_start = lang;
++    for (int i = 0; i < kRestartFields; i++) start_vals[i] = *restart_fields[i];
++}
++std::vector<std::string> pending_names() {
++    std::vector<std::string> v;
++    static const char* names[] = {"Distância", "Grama", "Sombras", "Texturas", "Ícones de botão"};
++    for (int i = 0; i < kRestartFields; i++)
++        if (*restart_fields[i] != start_vals[i]) v.push_back(names[i]);
++    if (lang != lang_start) v.push_back("Idioma");
++    return v;
++}
++
++int choice_index(const Item& it) {
++    if (!it.value || it.ch.empty()) return 0;
++    int best = 0, dist = 1 << 30;
++    for (size_t i = 0; i < it.ch.size(); i++) {
++        const int d = std::abs(it.ch[i].v - *it.value);
++        if (d < dist) dist = d, best = (int)i;
++    }
++    return best;
++}
++bool fixed(const Item& it) { return it.kind != K_VALUE || (it.value == &opts.resolution && row_fixed(&opts.resolution)); }
++void preset_apply(int p) {
++    if (p < 0 || p > 3) return;
++    for (int i = 0; i < 5; i++) *preset_fields[i] = kPresetVals[p][i];
++}
++void preset_check() {
++    const int p = opts.dp_preset;
++    if (p < 0 || p > 3) return;
++    for (int i = 0; i < 5; i++)
++        if (*preset_fields[i] != kPresetVals[p][i]) { opts.dp_preset = 4; return; }
++}
++void quiet_restart_ask() {   // (o Hookshot não pergunta ao fechar: aqui é o Y que aplica)
++    int now[mr::kMax];
++    restart_values(now);
++    restart_state.note(now);
++    restart_state.choose_later(now);
++}
++void set(const Item& it, int dir) {
++    if (fixed(it) || it.ch.empty()) return;
++    const int i = choice_index(it), n = (int)it.ch.size();
++    const int ni = std::min(std::max(i + dir, 0), n - 1);
++    if (ni == i && *it.value == it.ch[i].v) return;
++    *it.value = it.ch[ni].v;
++    if (it.value == &opts.dp_preset) preset_apply(*it.value);
++    else if (it.preset) preset_check();
++    if (it.value == &lang) lang_write();
++    if (it.value == &opts.mic && can_mic()) mic_chosen();
++    quiet_restart_ask();
++    save();
++}
++
++// ---------------------------------------------------------------- o desenho
++uint32_t W = 1280, H = 800;
++float K = 1.0f;
++int S(float v) { return (int)lroundf(v * K); }
++inline uint32_t rgb(int r, int g, int b) { return (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b; }
++inline uint32_t mix(uint32_t a, uint32_t b, float t) {
++    t = std::min(std::max(t, 0.0f), 1.0f);
++    auto c = [&](int sh) { return (uint32_t)lroundf(((a >> sh) & 255) * (1 - t) + ((b >> sh) & 255) * t) << sh; };
++    return c(16) | c(8) | c(0);
++}
++ImDrawList* DL = nullptr;
++ui::Fonts FN{};
++inline ImU32 col(uint32_t c, float a = 1) {
++    return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)lroundf(std::min(std::max(a, 0.0f), 1.0f) * 255));
++}
++void box(int x, int y, int w, int h, uint32_t c, float a = 1) {
++    if (w > 0 && h > 0) DL->AddRectFilled(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), col(c, a));
++}
++void vgrad(int x, int y, int w, int h, uint32_t c0, uint32_t c1) {
++    const ImU32 a = col(c0), b = col(c1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), a, a, b, b);
++}
++void hfade(int x, int y, int w, int h, uint32_t c, float a0, float a1) {   // (faixa que esmaece da esquerda para a direita)
++    const ImU32 l = col(c, a0), r = col(c, a1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), l, r, r, l);
++}
++void vfade(int x, int y, int w, int h, uint32_t c, float a0, float a1) {   // (de cima para baixo)
++    const ImU32 t = col(c, a0), b = col(c, a1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), t, t, b, b);
++}
++void frame(int x, int y, int w, int h, uint32_t c, int t = 1, float a = 1) {
++    box(x, y, w, t, c, a), box(x, y + h - t, w, t, c, a), box(x, y + t, t, h - 2 * t, c, a), box(x + w - t, y + t, t, h - 2 * t, c, a);
++}
++void glow(int x, int y, int w, int h) {   // (o contorno branco com brilho do item em foco, como no jogo)
++    for (int i = 6; i >= 1; i--) frame(x - S(3) - i, y - S(3) - i, w + 2 * (S(3) + i), h + 2 * (S(3) + i), 0xffffff, 1, 0.07f * (7 - i));
++    frame(x - S(3), y - S(3), w + 2 * S(3), h + 2 * S(3), 0xffffff, std::max(2, S(3)));
++}
++void disc(float cx, float cy, float r, uint32_t c, float a = 1) { DL->AddCircleFilled(ImVec2(cx, cy), r, col(c, a), 24); }
++void rrect(int x, int y, int w, int h, int r, uint32_t c, float a = 1) {
++    DL->AddRectFilled(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), col(c, a), (float)r);
++}
++ImFont* face(bool bold) { return bold ? FN.strong : FN.body; }
++int text_w(const char* s, float px, bool bold) { return (int)ceilf(ui::size_of(face(bold), (float)S(px), s).x); }
++// (texto com o topo em y; align: 0 esquerda, 1 centro, 2 direita; sombra opcional)
++void text(int x, int y, const char* s, float px, bool bold, uint32_t c, int align = 0, bool shadow = false) {
++    const float size = (float)S(px);
++    const float w = align ? ui::size_of(face(bold), size, s).x : 0;
++    const float tx = align == 1 ? x - w * 0.5f : align == 2 ? x - w : (float)x;
++    if (shadow) DL->AddText(face(bold), size, ImVec2(tx, (float)y + std::max(1, S(1))), col(0, 0.75f), s);
++    DL->AddText(face(bold), size, ImVec2(tx, (float)y), col(c), s);
++}
++int wrap(int x, int y, int width, const char* s, float px, bool bold, uint32_t c, float lh = 1.35f) {
++    const float size = (float)S(px);
++    DL->AddText(face(bold), size, ImVec2((float)x, (float)y), col(c), s, nullptr, (float)width);
++    return (int)ceilf(face(bold)->CalcTextSizeA(size, FLT_MAX, (float)width, s).y);
++}
++// glifo do Deck: círculo claro com a letra (A, B, X, Y, L, R, ≡) ou retângulo (L1, R1, L2, L4...)
++int glyph(int x, int cy, const char* t, bool rect = false) {
++    const uint32_t bg = rgb(243, 238, 228), fg = rgb(43, 33, 22);
++    if (!rect) {
++        const float r = K * 12;
++        disc(x + r, (float)cy, r, bg);
++        if (!strcmp(t, "=")) {   // (o botão Menu do Deck: três traços)
++            for (int i = -1; i <= 1; i++) box((int)(x + r) - S(6), cy + i * S(4) - std::max(1, S(1)), S(12), std::max(2, S(2)), fg);
++        } else {
++            text((int)(x + r), cy - S(9), t, 14, true, fg, 1);
++        }
++        return (int)(2 * r);
++    }
++    const int w = text_w(t, 12, true) + S(10), h = S(20);
++    rrect(x, cy - h / 2, w, h, S(4), bg);
++    text(x + w / 2, cy - S(8), t, 12, true, fg, 1);
++    return w;
++}
++
++// as áreas clicáveis desta pintura (o toque e o mouse: hit)
++struct Rect { int x, y, w, h; };
++Rect r_tabs[4], r_secs[8], r_rows[12], r_y, r_b, r_a;
++int n_secs = 0, n_rows = 0;
++bool in(const Rect& r, int x, int y) { return r.w > 0 && x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h; }
++
++const uint32_t C_NIGHT = rgb(10, 6, 4), C_IVORY = rgb(246, 239, 224), C_INK = rgb(59, 40, 16), C_INK2 = rgb(90, 63, 23),
++               C_GOLD = rgb(216, 166, 50), C_CREAM = rgb(240, 220, 174);
++
++void paint_bar() {
++    // faixa de couro com a borda de baixo recortada (colunas de 4 px)
++    for (int x = 0; x < (int)W; x += 4) {
++        const float fx = (float)x / K;
++        const float edge = 74 + 6 * sinf(fx * 0.011f) + 3 * sinf(fx * 0.037f + 1.3f) + (fx < 90 || fx > 1190 ? 10 : 0);
++        const int e = S(edge);
++        vgrad(x, 0, 4, e, rgb(138, 108, 67), rgb(109, 82, 50));
++        box(x, e, 4, S(3), rgb(40, 26, 12), 0.8f);
++    }
++    // espirais nas pontas
++    for (int side = 0; side < 2; side++) {
++        const float cx = side ? W - K * 22 : K * 22, cy = K * 92;
++        for (float t = 0; t < 10.5f; t += 0.02f) {
++            const float r = K * (2 + t * 1.1f);
++            disc(cx + (side ? -1 : 1) * r * cosf(t), cy + r * sinf(t), K * 1.3f, rgb(200, 169, 110));
++        }
++    }
++    text(S(30), S(14), "Deckport", 24, true, C_IVORY, 0, true);
++    text(S(31), S(42), "STEAM DECK", 11, true, C_CREAM);
++    // abas
++    const int tw = S(150), total = tw * (int)tabs.size(), x0 = ((int)W - total) / 2;
++    glyph(x0 - S(46), S(33), "L1", true);
++    glyph(x0 + total + S(16), S(33), "R1", true);
++    for (int i = 0; i < (int)tabs.size(); i++) {
++        const int x = x0 + i * tw;
++        if (i == tab) vgrad(x, 0, tw, S(66), rgb(95, 65, 37), rgb(75, 49, 26)), box(x, S(64), tw, S(2), rgb(42, 26, 12));
++        text(x + tw / 2, S(19), tabs[i].name, 21, true, C_IVORY, 1, true);
++        r_tabs[i] = {x, 0, tw, S(66)};
++    }
++    // canto direito: a predefinição em uso
++    text((int)W - S(28), S(16), kPresets[std::min(std::max(opts.dp_preset, 0), 4)], 19, true, C_IVORY, 2, true);
++    text((int)W - S(28), S(42), "predefinição", 13, false, C_CREAM, 2);
++}
++
++void paint_column() {
++    const Tab& t = tabs[tab];
++    const int x = S(38), y = S(122), w = S(318), h = (int)H - S(122) - S(74);
++    vgrad(x, y, w, h, rgb(51, 38, 26), rgb(36, 26, 18));
++    frame(x, y, w, h, rgb(74, 55, 36));
++    frame(x + S(10), y + S(10), w - S(20), h - S(20), 0xffffff, 1, 0.06f);
++    n_secs = (int)t.secs.size();
++    int by = S(160);
++    for (int i = 0; i < n_secs; i++) {
++        if (i == 1 && n_secs > 2) {   // (ornamento entre o primeiro e os outros, como Load / Options no jogo)
++            const int oy = by - S(2);
++            hfade(S(90), oy, S(70), std::max(1, S(1)), rgb(140, 115, 80), 0, 1);
++            hfade(S(240), oy, S(70), std::max(1, S(1)), rgb(140, 115, 80), 1, 0);
++            text(S(200), oy - S(11), "~", 18, true, rgb(140, 115, 80), 1);
++            by += S(20);
++        }
++        const int bx = S(84), bw = S(226), bh = S(48);
++        const bool open = i == sec[tab];
++        vgrad(bx, by, bw, bh, open ? rgb(154, 118, 70) : rgb(128, 97, 58), open ? rgb(130, 99, 58) : rgb(108, 81, 48));
++        frame(bx, by, bw, bh, rgb(42, 28, 14));
++        frame(bx + S(5), by + S(5), bw - S(10), bh - S(10), rgb(168, 139, 90), 1, 0.9f);
++        text(bx + bw / 2, by + S(11), t.secs[i].name, 21, false, C_IVORY, 1, true);
++        if (zone == 0 && open) glow(bx, by, bw, bh);
++        r_secs[i] = {bx, by, bw, bh};
++        by += bh + S(16);
++    }
++}
++
++void paint_parchment_bg(int x, int y, int w, int h) {
++    box(x, y, w, h, rgb(184, 150, 92));
++    const uint32_t dark = rgb(120, 88, 42);
++    const int bw = w / 3, bh = h / 3;
++    hfade(x, y, bw, h, dark, 0.75f, 0), hfade(x + w - bw, y, bw, h, dark, 0, 0.75f);
++    vfade(x, y, w, bh, dark, 0.6f, 0), vfade(x, y + h - bh, w, bh, dark, 0, 0.7f);
++    for (int k = 0; k < h; k += 7) box(x, y + k, w, 1, 0xffffff, 0.025f);   // (fibras do papel)
++    frame(x, y, w, h, rgb(75, 50, 20));
++}
++
++void paint_title(int cx, int y, const char* s) {
++    text(cx, y, s, 30, true, rgb(58, 39, 9), 1);
++    const int tw = text_w(s, 30, true);
++    for (int side = -1; side <= 1; side += 2) {   // (o ornamento de cada lado: traço e voluta)
++        const int ox = cx + side * (tw / 2 + S(14));
++        const int lx = side < 0 ? ox - S(40) : ox;
++        box(lx, y + S(19), S(26), std::max(2, S(2)), rgb(58, 39, 9));
++        const float vx = side < 0 ? ox - S(40) - S(2) : ox + S(30);
++        for (float t = 0; t < 8.0f; t += 0.03f) {
++            const float r = K * (1.5f + t * 0.7f);
++            disc(vx + side * r * cosf(t), y + S(19) + r * sinf(t), K * 1.0f, rgb(58, 39, 9));
++        }
++    }
++}
++
++void paint_row(int x, int y, int w, const Item& it, bool focus) {
++    const int h = S(46);
++    if (focus) hfade(x, y, w, h, rgb(127, 97, 47), 1, 0.95f);
++    else hfade(x, y, w, h, rgb(110, 84, 40), 0.85f, 0.0f);
++    text(x + S(18), y + S(11), it.name, 19, false, C_IVORY, 0, true);
++    int nx = x + S(18) + text_w(it.name, 19, false) + S(10);
++    if (it.restart) {   // (selo "ao reiniciar")
++        const int bw = text_w("ao reiniciar", 12, true) + S(10);
++        box(nx, y + S(14), bw, S(18), rgb(230, 196, 109));
++        text(nx + bw / 2, y + S(15), "ao reiniciar", 12, true, rgb(43, 28, 5), 1);
++    }
++    const uint32_t ink = focus ? C_IVORY : C_INK;
++    const int right = x + w - S(14);
++    if (it.kind == K_ACTION) {
++        const bool arm = armed == &it;
++        text(right, y + S(11), arm ? "Aperte A de novo" : "A", 19, true, arm ? C_GOLD : ink, 2);
++        return;
++    }
++    const char* val = it.kind == K_INFO ? it.info : it.ch.empty() ? "" : it.ch[choice_index(it)].label;
++    if (it.value == &opts.dp_preset && opts.dp_preset == 4) val = "Personalizado";
++    const int vw = S(210), vx = right - vw;
++    text(vx + vw / 2, y + S(11), val, 19, true, ink, 1);
++    if (!fixed(it)) {   // (setas)
++        const float a = focus ? 1.0f : 0.35f;
++        const int ay = y + h / 2;
++        for (int i = 0; i < S(10); i++) {
++            box(vx + i, ay - i * 7 / 10, 1, 2 * (i * 7 / 10) + 1, ink, a);
++            box(right - i, ay - i * 7 / 10, 1, 2 * (i * 7 / 10) + 1, ink, a);
++        }
++    }
++}
++
++void paint_hint(int x, int y, int w, const Item* it) {
++    box(x, y, w, std::max(1, S(1)), C_INK2, 0.35f);
++    if (!it) return;
++    wrap(x, y + S(14), w - S(260), it->help, 17, false, rgb(58, 39, 9));
++    if (it->gain && it->value) {
++        const char* g = it->gain(choice_index(*it));
++        if (g) {
++            const int gw = S(230), gx = x + w - gw;
++            box(gx, y + S(14), gw, S(58), rgb(79, 58, 28));
++            text(gx + gw - S(10), y + S(20), "GANHO MEDIDO NO DECK", 11, true, rgb(233, 214, 166), 2);
++            wrap(gx + S(10), y + S(38), gw - S(20), g, 14, true, C_IVORY, 1.2f);
++        }
++    }
++}
++
++void paint_preset_table(int x, int y, int w) {
++    static const char* labels[5] = {"Resolução interna", "Distância", "Grama", "Sombras", "Texturas"};
++    static const char* vals[5][4] = {{"100%", "75%", "67%", "50%"}, {"Original", "Média", "Curta", "Perto"},
++                                     {"Original", "Baixa", "Baixa", "Baixa"}, {"Original", "Média", "Baixa", "Baixa"},
++                                     {"Altas", "Médias", "Médias", "Médias"}};
++    const int c0 = S(200), cw = (w - c0) / 4, rh = S(30);
++    const int act = opts.dp_preset;
++    if (act >= 0 && act < 4) box(x + c0 + act * cw, y, cw, rh * 6, 0xffffff, 0.16f);
++    for (int c = 0; c < 4; c++) text(x + c0 + c * cw + cw / 2, y + S(6), kPresets[c], 15, true, rgb(58, 39, 9), 1);
++    for (int r = 0; r < 5; r++) {
++        const int ry = y + rh * (r + 1);
++        box(x, ry, w, std::max(1, S(1)), C_INK2, 0.2f);
++        text(x, ry + S(6), labels[r], 16, true, rgb(58, 39, 9));
++        for (int c = 0; c < 4; c++) text(x + c0 + c * cw + cw / 2, ry + S(6), vals[r][c], 16, c == act, rgb(58, 39, 9), 1);
++    }
++}
++
++void paint_map(int x, int y, int w) {
++    // o Deck, simplificado, no centro
++    const int dw = S(380), dh = S(140), dx = x + (w - dw) / 2, dy = y + S(30);
++    rrect(dx + S(30), dy - S(14), S(56), S(22), S(8), rgb(42, 32, 22));
++    rrect(dx + dw - S(86), dy - S(14), S(56), S(22), S(8), rgb(42, 32, 22));
++    rrect(dx, dy, dw, dh, S(52), rgb(30, 23, 18));
++    rrect(dx + S(108), dy + S(12), S(164), S(104), S(6), rgb(13, 10, 8));
++    box(dx + S(116), dy + S(20), S(148), S(88), rgb(42, 32, 22));
++    disc(dx + K * 52, dy + K * 38, K * 15, rgb(43, 33, 22)), disc(dx + K * 52, dy + K * 38, K * 11, rgb(70, 55, 38));
++    box(dx + S(42), dy + S(66), S(10), S(30), rgb(70, 55, 38)), box(dx + S(32), dy + S(76), S(30), S(10), rgb(70, 55, 38));
++    disc(dx + dw - K * 52, dy + K * 98, K * 15, rgb(43, 33, 22)), disc(dx + dw - K * 52, dy + K * 98, K * 11, rgb(70, 55, 38));
++    const float bx = dx + dw - K * 52, by = dy + K * 46;
++    const char* f[4] = {"Y", "X", "B", "A"};
++    const float off[4][2] = {{0, -16}, {-16, 0}, {16, 0}, {0, 16}};
++    for (int i = 0; i < 4; i++) {
++        disc(bx + K * off[i][0], by + K * off[i][1], K * 8.5f, rgb(43, 33, 22));
++        text((int)(bx + K * off[i][0]), (int)(by + K * off[i][1]) - S(7), f[i], 11, true, rgb(233, 220, 192), 1);
++    }
++    // rótulos dos dois lados, como os do "Basic Controls" do jogo
++    auto lab = [&](bool right, int ly, const char* g, bool rect, const char* t) {
++        const int lw = S(176), lx = right ? x + w - lw : x;
++        if (right) hfade(lx, ly, lw, S(32), rgb(110, 84, 40), 0.0f, 0.85f);
++        else hfade(lx, ly, lw, S(32), rgb(110, 84, 40), 0.85f, 0.0f);
++        if (right) {
++            const int gw = glyph(lx + S(10), ly + S(16), g, rect);
++            text(lx + S(18) + gw, ly + S(5), t, 17, false, C_IVORY, 0, true);
++        } else {
++            const int tw = text_w(t, 17, false);
++            text(lx + S(10), ly + S(5), t, 17, false, C_IVORY, 0, true);
++            glyph(lx + S(18) + tw, ly + S(16), g, rect);
++        }
++    };
++    lab(false, y + S(20), "L2", true, "Mirar");
++    lab(false, y + S(64), "L", false, "Mover");
++    lab(false, y + S(108), "R2", true, "Usar o item");
++    lab(false, y + S(152), "L1", true, "Trocar de aba");
++    lab(true, y + S(20), "=", false, "Abrir o menu");
++    lab(true, y + S(64), "B", false, "Ações e correr");
++    lab(true, y + S(108), "A", false, "Guardar");
++    lab(true, y + S(152), "Y", false, "Pular");
++    lab(true, y + S(196), "R", false, "Câmera");
++}
++
++void paint_about(int x, int y, int w) {
++    const int col = w / 2 - S(12);
++    text(x, y + S(10), "Deckport", 40, true, rgb(58, 39, 9));
++    text(x, y + S(58), "STEAMDECK VERSION", 14, true, C_INK2);
++    wrap(x, y + S(96), col, "The Legend of Zelda: Ocarina of Time, versão de Switch 2, rodando nativo no Steam Deck.", 17, false, rgb(58, 39, 9));
++    wrap(x, y + S(170), col, "Motor Deckport 2.1.0, feito a partir do Hookshot.", 17, false, rgb(58, 39, 9));
++    const int rx = x + w / 2 + S(12);
++    int ry = y + S(10);
++    auto block = [&](const char* h, const char* body) {
++        text(rx, ry, h, 14, true, C_INK2);
++        ry += S(22);
++        ry += wrap(rx, ry, col, body, 17, false, rgb(58, 39, 9)) + S(14);
++    };
++    block("PORT PARA STEAM DECK", "Kewin Lima");
++    block("MOTOR BASE", "Hookshot (NotRexed e colaboradores), licença GPL-3.0. O código do motor e das nossas mudanças acompanha o port.");
++    block("JOGO", "Nintendo. Você precisa da sua própria cópia do jogo.");
++}
++
++void paint_footer() {
++    const int y = (int)H - S(58), cy = y + S(29);
++    hfade((int)(W * 0.35f), y, (int)W - (int)(W * 0.35f), (int)H - y, 0, 0, 0.6f);
++    int x = (int)W - S(34);
++    auto hint = [&](const char* label, const char* g, bool rect, uint32_t c, Rect* r) {
++        const int gw = rect ? text_w(g, 12, true) + S(10) : S(24);
++        x -= gw;
++        glyph(x, cy, g, rect);
++        const int lw = text_w(label, 20, false);
++        x -= S(9) + lw;
++        text(x, cy - S(13), label, 20, false, c, 0, true);
++        if (r) *r = {x, y, lw + S(9) + gw, S(58)};
++        x -= S(28);
++    };
++    r_y = r_b = r_a = {0, 0, 0, 0};
++    hint(zone == 1 ? "Voltar" : "Fechar", "B", false, C_IVORY, &r_b);
++    const Section& s = tabs[tab].secs[sec[tab]];
++    if (zone == 0 && !s.items.empty()) hint("Selecionar", "A", false, C_IVORY, &r_a);
++    if (zone == 1) hint("Mudar", "<  >", true, C_IVORY, nullptr);
++    if (!pending_names().empty()) hint("Aplicar e reiniciar", "Y", false, rgb(246, 215, 125), &r_y);
++}
++
++void paint(ui::Ctx& c) {
++    DL = c.d, FN = c.f, W = (uint32_t)c.w, H = (uint32_t)c.h, K = std::min(c.w / 1280.0f, c.h / 800.0f);
++    const uint32_t w = W, h = H;
++    start();
++    box(0, 0, (int)w, (int)h, C_NIGHT);
++    for (int i = 30; i >= 1; i--) disc(w * 0.7f, h * 0.55f, h * 0.025f * i, rgb(52, 32, 16), 0.035f);
++    paint_bar();
++    paint_column();
++    const Tab& t = tabs[tab];
++    const Section& s = t.secs[sec[tab]];
++    const int px = S(398), py = S(150), pw = S(842), ph = (int)h - S(150) - S(112);
++    paint_parchment_bg(px, py, pw, ph);
++    paint_title(px + pw / 2, py + S(22), s.title);
++    const int cx = px + S(40), cy = py + S(84), cw = pw - S(80);
++    n_rows = 0;
++    if (s.type == S_MAP) paint_map(cx, cy, cw);
++    else if (s.type == S_ABOUT) paint_about(cx, cy, cw);
++    else {
++        int ry = cy;
++        for (size_t i = 0; i < s.items.size(); i++) {
++            paint_row(cx, ry, cw, s.items[i], zone == 1 && (int)i == row[tab]);
++            r_rows[i] = {cx, ry, cw, S(46)};
++            ry += S(52);
++        }
++        n_rows = (int)s.items.size();
++        if (s.type == S_PRESET) paint_preset_table(cx, ry + S(6), cw);
++        const Item* hi = s.items.empty() ? nullptr : &s.items[zone == 1 ? row[tab] : 0];
++        paint_hint(cx, py + ph - S(118), cw, hi);
++    }
++    if (s.type == S_MAP)
++        paint_hint(cx, py + ph - S(118), cw, nullptr),
++        wrap(cx, py + ph - S(104), cw, "Mesmas posições do controle do Switch: o botão da direita faz as ações, o de baixo guarda e o de cima pula. Este menu abre com View e Menu juntos.", 17, false, rgb(58, 39, 9));
++    // faixa do reinício pendente
++    const auto pend = pending_names();
++    if (!pend.empty()) {
++        std::string l = pend.size() == 1 ? "1 opção vale ao reiniciar o jogo: " : std::to_string(pend.size()) + " opções valem ao reiniciar o jogo: ";
++        for (size_t i = 0; i < pend.size(); i++) l += (i ? ", " : "") + pend[i];
++        text(px + pw / 2, py + ph + S(10), l.c_str(), 16, false, rgb(246, 215, 125), 1);
++    }
++    paint_footer();
++    if (msg_restarting) {
++        const int mw = S(520), mh = S(110), mx = ((int)w - mw) / 2, my = ((int)h - mh) / 2;
++        box(mx, my, mw, mh, rgb(27, 18, 11), 0.96f);
++        frame(mx, my, mw, mh, rgb(179, 148, 97));
++        text(mx + mw / 2, my + S(26), "Salvando e reiniciando o jogo", 21, true, C_IVORY, 1);
++        text(mx + mw / 2, my + S(62), "Você volta para o ponto em que salvou por último.", 15, false, rgb(185, 178, 162), 1);
++    }
++}
++
++// ---------------------------------------------------------------- a entrada
++void apply_restart() {
++    msg_restarting = true;
++    save();
++    pipeline_cache_save(true);
++    if (FILE* f = fopen((game_dir() + "deckport_reiniciar").c_str(), "w")) fputs("1\n", f), fclose(f);
++    logf("menu (Deckport): aplicar e reiniciar");
++    if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
++}
++
++// press: as teclas do menu_tick (1 cima, 2 baixo, 3 esquerda, 4 direita, 5 B/Esc, 7 A/Enter); y: o Y do controle
++bool tick(bool* press, bool tab_left, bool tab_right, bool y, bool mouse, int mx, int my, uint32_t clicks, bool mine) {
++    start();
++    bool changed = false;
++    // toque e mouse: o que está sob o dedo (as áreas da última pintura)
++    if (mouse && (clicks & HOS_MOUSE_LEFT)) {
++        for (int i = 0; i < (int)tabs.size(); i++)
++            if (in(r_tabs[i], mx, my) && i != tab) tab = i, zone = 0, changed = true;
++        for (int i = 0; i < n_secs; i++)
++            if (in(r_secs[i], mx, my)) sec[tab] = i, row[tab] = 0, zone = 0, changed = true;
++        for (int i = 0; i < n_rows; i++)
++            if (in(r_rows[i], mx, my)) {
++                const bool again = zone == 1 && row[tab] == i;
++                zone = 1, row[tab] = i, changed = true;
++                if (again) {
++                    const Item& it = tabs[tab].secs[sec[tab]].items[i];
++                    if (it.kind == K_ACTION) press[7] = true;
++                    else press[mx < r_rows[i].x + r_rows[i].w * 3 / 4 ? 3 : 4] = true;
++                }
++            }
++        if (in(r_y, mx, my)) y = true;
++        if (in(r_b, mx, my)) press[5] = true;
++        if (in(r_a, mx, my)) press[7] = true;
++    }
++    if (clicks & HOS_MOUSE_RIGHT) press[5] = true;
++    if (tab_left || tab_right) {
++        tab = (tab + (tab_right ? 1 : (int)tabs.size() - 1)) % (int)tabs.size();
++        zone = 0, armed = nullptr, changed = true;
++    }
++    const Section& s = tabs[tab].secs[sec[tab]];
++    if (y && !pending_names().empty() && mine) { apply_restart(); return true; }
++    if (zone == 0) {
++        if (press[1] || press[2]) {
++            const int n = (int)tabs[tab].secs.size();
++            sec[tab] = (sec[tab] + (press[1] ? n - 1 : 1)) % n, row[tab] = 0, changed = true;
++        } else if ((press[7] || press[4]) && !s.items.empty()) {
++            zone = 1, row[tab] = 0, changed = true;
++        } else if (press[5]) {
++            open_now = false, armed = nullptr, changed = true;
++        }
++    } else if (s.items.empty()) {
++        zone = 0, changed = true;
++    } else {
++        const int n = (int)s.items.size();
++        const Item& it = s.items[std::min(row[tab], n - 1)];
++        if (press[1] || press[2]) row[tab] = (row[tab] + (press[1] ? n - 1 : 1)) % n, armed = nullptr, changed = true;
++        else if (press[5]) zone = 0, armed = nullptr, changed = true;
++        else if (it.kind == K_ACTION && press[7] && mine) {
++            if (armed != &it) armed = &it, changed = true;
++            else if (it.action == A_RESTART) {
++                armed = nullptr, msg_restarting = true, changed = true;
++                save();
++                pipeline_cache_save(true);
++                logf("menu (Deckport): reiniciar");
++                if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
++            } else if (it.action == A_QUIT) {
++                armed = nullptr, save();
++                pipeline_cache_save(true);
++                if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
++            }
++        } else if (press[3] || press[4] || press[7]) {
++            set(it, press[3] ? -1 : 1), changed = true;
++        }
++    }
++    return changed;
++}
++
++} // namespace dp
+diff --git a/gpu/vk/vk_deckport_startup.h b/gpu/vk/vk_deckport_startup.h
+new file mode 100644
+index 00000000..242af6d0
+--- /dev/null
++++ b/gpu/vk/vk_deckport_startup.h
+@@ -0,0 +1,195 @@
++// (Deckport) A tela de abertura do port, animada, no lugar da tela do Hookshot enquanto os shaders são preparados.
++// Pedido do Kewin: fundo preto, o logo do jogo aparece, um flare passa revelando "STEAMDECK VERSION" e só então
++// entra a barra dos shaders. Depois disso, brilhos discretos no logo e um reflexo correndo na barra.
++// O logo é o assets/hookshot.png da árvore (trocado pelo patch_tela_abertura.py pelo logo do port, 640x478, com
++// "STEAMDECK VERSION" na faixa de baixo: kSv*). Incluído em vk_menu.cpp, dentro do namespace anônimo, antes do
++// draw_startup. RX_VK_DECKPORT_STARTUP=0 volta à tela do Hookshot. RX_VK_DP_STARTUP_T=<segundos> congela a animação
++// num instante (para capturas de teste).
++#pragma once
++
++namespace dp {
++
++bool startup_on() {
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("RX_VK_DECKPORT_STARTUP");
++        v = !e || atoi(e) != 0;
++    }
++    return v != 0;
++}
++
++// (onde "STEAMDECK VERSION" fica no logo, em fração da largura e da altura da imagem)
++constexpr float kSvX0 = 210.0f / 640, kSvY0 = 407.0f / 478, kSvY1 = 441.0f / 478;
++// (a linha do tempo, em segundos desde o primeiro quadro)
++constexpr float kLogo0 = 0.35f, kLogo1 = 1.75f;   // (o logo aparece)
++constexpr float kFl0 = 2.05f, kFl1 = 3.15f;       // (o flare atravessa e revela a faixa)
++constexpr float kFlOut = 0.7f;                    // (o flare some)
++constexpr float kBar0 = 3.3f, kBarIn = 0.6f;      // (a barra entra)
++constexpr float kStartupMin = 4.2f;               // (a tela dura pelo menos isso: vk_main.cpp)
++
++inline float st_clamp(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
++inline float st_out(float x) { x = 1 - st_clamp(x); return 1 - x * x * x; }
++inline float st_smooth(float x) { x = st_clamp(x); return x * x * (3 - 2 * x); }
++inline ImU32 st_col(float a, int r = 255, int g = 255, int b = 255) { return IM_COL32(r, g, b, (int)(st_clamp(a) * 255 + 0.5f)); }
++
++/// Um flare: halo, risco horizontal comprido, risco vertical curto e o miolo. r o raio do halo, a a força (0 a 1)
++void st_flare(ui::Ctx& c, ImVec2 p, float r, float a) {
++    if (a <= 0 || r <= 0) return;
++    ImDrawList* d = c.d;
++    for (int i = 14; i >= 1; i--) d->AddCircleFilled(p, r * i / 14.0f, st_col(a * 0.05f, 255, 232, 180), 48);
++    const ImU32 mid = st_col(a * 0.9f, 255, 246, 222), end = st_col(0, 255, 246, 222);
++    const float L = r * 4.2f, T = std::max(1.0f, r * 0.07f);
++    d->AddRectFilledMultiColor(ImVec2(p.x - L, p.y - T), ImVec2(p.x, p.y + T), end, mid, mid, end);
++    d->AddRectFilledMultiColor(ImVec2(p.x, p.y - T), ImVec2(p.x + L, p.y + T), mid, end, end, mid);
++    const float V = r * 1.3f, W = std::max(1.0f, r * 0.045f);
++    d->AddRectFilledMultiColor(ImVec2(p.x - W, p.y - V), ImVec2(p.x + W, p.y), end, end, mid, mid);
++    d->AddRectFilledMultiColor(ImVec2(p.x - W, p.y), ImVec2(p.x + W, p.y + V), mid, mid, end, end);
++    d->AddCircleFilled(p, r * 0.16f, st_col(a), 24);
++}
++
++/// O logo em pedaços: tudo menos a faixa "STEAMDECK VERSION", e a faixa só até onde o flare já passou (reveal, 0 a 1)
++void st_logo(ui::Ctx& c, ImTextureData* logo, float x0, float top, float lw, float lh, float a, float reveal) {
++    const ImU32 col = st_col(a);
++    auto piece = [&](float ua, float va, float ub, float vb) {
++        c.d->AddImage(logo->GetTexRef(), ImVec2(x0 + lw * ua, top + lh * va), ImVec2(x0 + lw * ub, top + lh * vb), ImVec2(ua, va),
++                      ImVec2(ub, vb), col);
++    };
++    piece(0, 0, 1, kSvY0);
++    piece(0, kSvY0, kSvX0, kSvY1);
++    piece(0, kSvY1, 1, 1);
++    if (reveal > 0) {
++        c.d->PushClipRect(ImVec2(x0, top), ImVec2(x0 + lw * (kSvX0 + (1 - kSvX0) * reveal), top + lh), true);
++        piece(kSvX0, kSvY0, 1, kSvY1);
++        c.d->PopClipRect();
++    }
++}
++
++/// Os textos da tela (vk_progress.h startup_view, em inglês) em português, como o menu do port
++std::string st_pt(std::string t) {
++    static const char* const kMap[][2] = {
++        {"Closing", "Fechando"},
++        {"Keeping what is prepared for the next start", "O que já foi preparado fica guardado para a próxima vez"},
++        {"Starting the game", "Iniciando o jogo"},
++        {"Preparing shaders", "Preparando os shaders"},
++        {"Building pipelines", "Montando os pipelines"},
++        {"Loading pipelines", "Carregando os pipelines"},
++        {"This happens once after an update. Closing the window keeps what is done.",
++         "Isso acontece uma vez depois de cada atualização. Se fechar o jogo, o que já foi feito fica guardado."},
++        {"Reading the game's shaders", "Lendo os shaders do jogo"},
++        {"Reading the pipeline notes", "Lendo as anotações dos pipelines"},
++        {"Loading the shader cache", "Carregando o cache de shaders"},
++        {"a few seconds left", "faltam alguns segundos"},
++    };
++    for (const auto& m : kMap)
++        if (t == m[0]) return m[1];
++    int a = 0, b = 0;
++    char buf[64];
++    if (sscanf(t.c_str(), "STEP %d OF %d", &a, &b) == 2) return snprintf(buf, sizeof buf, "Etapa %d de %d", a, b), buf;
++    if (sscanf(t.c_str(), "about %d s left", &a) == 1 && t.find(" s left") != std::string::npos)
++        return snprintf(buf, sizeof buf, "faltam uns %d s", a), buf;
++    if (sscanf(t.c_str(), "about %d min left", &a) == 1) return snprintf(buf, sizeof buf, "faltam uns %d min", a), buf;
++    if (t.find(" / ") != std::string::npos)   // ("16,300 / 38,809 shaders": o ponto de milhar)
++        for (char& ch : t)
++            if (ch == ',') ch = '.';
++    return t;
++}
++
++/// (teste) RX_VK_DP_STARTUP_T definido: a tela é desenhada mesmo sem janela (capturas RX_VK_SHOT_MENU), com números de exemplo
++bool startup_test() {
++    static const bool on = getenv("RX_VK_DP_STARTUP_T") != nullptr;
++    return on;
++}
++
++void paint_startup(ui::Ctx& c, const StartupView& view, float fade) {
++    using clk = std::chrono::steady_clock;
++    static const clk::time_point t0 = clk::now();
++    static const float forced = getenv("RX_VK_DP_STARTUP_T") ? (float)atof(getenv("RX_VK_DP_STARTUP_T")) : -1.0f;
++    StartupView v = view;
++    if (startup_test() && v.title.empty()) {
++        v.version = "v2.1.0", v.step = "STEP 1 OF 2", v.title = "Preparing shaders", v.pct = "42%", v.fraction = 0.42;
++        v.left = "16,300 / 38,809 shaders", v.right = "about 4 min left", v.hint = "This happens once after an update. Closing the window keeps what is done.";
++    }
++    v.step = st_pt(v.step), v.title = st_pt(v.title), v.left = st_pt(v.left), v.right = st_pt(v.right), v.hint = st_pt(v.hint);
++    const float t = forced >= 0 ? forced : std::chrono::duration<float>(clk::now() - t0).count();
++    const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f, k = s * 0.86f;
++    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), IM_COL32(0, 0, 0, 255));
++
++    // o logo: aparece crescendo de leve para o lugar
++    float aspect = 1;
++    ImTextureData* logo = ui::logo(&aspect);
++    const float lh = 168 * s, lw = lh * aspect, top = h * 0.5f - 180 * s, x0 = cx - lw * 0.5f;
++    const float in = st_out((t - kLogo0) / (kLogo1 - kLogo0));
++    const float reveal = st_smooth((t - kFl0) / (kFl1 - kFl0));
++    if (logo && in > 0) {
++        const float sc = 1.06f - 0.06f * in;
++        st_logo(c, logo, cx - lw * sc * 0.5f, top + lh * 0.5f - lh * sc * 0.5f, lw * sc, lh * sc, in, reveal);
++    } else if (!logo) {
++        ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, top + lh * 0.5f), ui::alpha(ui::rgba(246, 232, 204), in), "DECKPORT", 6 * k);
++    }
++
++    // a barra e os textos, que entram depois do flare (o fundo é preto: um preto por cima faz a entrada)
++    float y = top + lh + 14 * s;
++    const float bar_in = st_clamp((t - kBar0) / kBarIn);
++    if (bar_in > 0) {
++        const std::string credit = "Deckport, feito a partir do Hookshot " + v.version;
++        ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y), ui::kDim, credit.c_str());
++        if (!v.title.empty()) {
++            y += 34 * k;
++            if (!v.step.empty()) {
++                ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, v.step.c_str());
++            }
++            ui::text_centre(c, c.f.heading, 24 * k, ImVec2(cx, y + 20 * k), ui::kInk, v.title.c_str());
++            const float bx0 = cx - 270 * k, bx1 = cx + 270 * k, by = y + 64 * k;
++            float under = by;
++            if (v.fraction >= 0) {
++                const float bh = 26 * k, pad = 4 * k, fx = bx0 + pad + (bx1 - bx0 - 2 * pad) * (float)std::min(v.fraction, 1.0);
++                c.d->AddRectFilled(ImVec2(bx0, by), ImVec2(bx1, by + bh), ui::kCellDark);
++                c.d->AddRect(ImVec2(bx0, by), ImVec2(bx1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
++                if (fx > bx0 + pad) {
++                    ui::gold(c, ImVec2(bx0 + pad, by + pad), ImVec2(fx, by + bh - pad));
++                    // (um reflexo correndo no ouro, da esquerda para a direita)
++                    const float bw = 46 * k, sx = bx0 + (bx1 - bx0 + 2 * bw) * (fmodf(t, 2.4f) / 2.4f) - bw;
++                    const ImU32 hi = st_col(0.38f, 255, 252, 236), no = st_col(0, 255, 252, 236);
++                    c.d->PushClipRect(ImVec2(bx0 + pad, by + pad), ImVec2(fx, by + bh - pad), true);
++                    c.d->AddRectFilledMultiColor(ImVec2(sx - bw, by), ImVec2(sx, by + bh), no, hi, hi, no);
++                    c.d->AddRectFilledMultiColor(ImVec2(sx, by), ImVec2(sx + bw, by + bh), hi, no, no, hi);
++                    c.d->PopClipRect();
++                }
++                const float split = std::max(fx, bx0 + pad);
++                c.d->PushClipRect(ImVec2(bx0, by), ImVec2(split, by + bh), true);
++                ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
++                c.d->PopClipRect();
++                c.d->PushClipRect(ImVec2(split, by), ImVec2(bx1, by + bh), true);
++                ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kInk, v.pct.c_str());
++                c.d->PopClipRect();
++                under = by + bh;
++            }
++            const float px = 16.5f * k;
++            ui::text(c, c.f.body, px, ImVec2(v.fraction >= 0 ? bx0 : cx - ui::size_of(c.f.body, px, v.left.c_str()).x * 0.5f, under + 12 * k),
++                     ui::kSoft, v.left.c_str());
++            if (!v.right.empty())
++                ui::text(c, c.f.body, px, ImVec2(bx1 - ui::size_of(c.f.body, px, v.right.c_str()).x, under + 12 * k), ui::kSoft, v.right.c_str());
++            if (!v.hint.empty()) ui::text_centre(c, c.f.body, 15.5f * k, ImVec2(cx, by + 92 * k), ui::kDim, v.hint.c_str());
++        }
++        if (bar_in < 1) c.d->AddRectFilled(ImVec2(0, top + lh + 6 * s), ImVec2(w, h), st_col(1 - bar_in, 0, 0, 0));
++    }
++
++    if (logo) {
++        // o flare que revela a faixa: anda junto da borda revelada, e no fim abre e some
++        if (t > kFl0 && t < kFl1 + kFlOut) {
++            const float out = t < kFl1 ? 0 : (t - kFl1) / kFlOut;
++            const float a = t < kFl1 ? st_clamp((t - kFl0) / 0.18f) : 1 - out;
++            st_flare(c, ImVec2(x0 + lw * (kSvX0 + (1 - kSvX0) * reveal), top + lh * (kSvY0 + kSvY1) * 0.5f), lh * 0.34f * (1 + 0.6f * out), a);
++        }
++        // depois, brilhos discretos em pontos do logo, cada um no seu ritmo
++        static const float kTw[][2] = {{0.10f, 0.31f}, {0.475f, 0.04f}, {0.92f, 0.45f}, {0.985f, 0.865f}, {0.19f, 0.42f}, {0.60f, 0.33f}};
++        if (t > kStartupMin)
++            for (int i = 0; i < 6; i++) {
++                const float period = 3.4f + 0.9f * i, ph = fmodf(t + i * 1.7f, period);
++                if (ph < 0.9f) st_flare(c, ImVec2(x0 + lw * kTw[i][0], top + lh * kTw[i][1]), lh * 0.06f, sinf(ph / 0.9f * 3.14159f) * 0.85f);
++            }
++    }
++    if (fade > 0) c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), st_col(std::min(fade, 1.0f), 0, 0, 0));
++}
++
++} // namespace dp
+diff --git a/gpu/vk/vk_draw.cpp b/gpu/vk/vk_draw.cpp
+index 13a84ef9..f6f30142 100644
+--- a/gpu/vk/vk_draw.cpp
++++ b/gpu/vk/vk_draw.cpp
+@@ -30,6 +30,9 @@
+ #include <thread>
+ #include <setjmp.h>
+ #include <signal.h>
++#if defined(__linux__) && defined(__GLIBC__)
++#include <malloc.h>
++#endif
+ 
+ #include "shader_recompiler/backend/spirv/emit_spirv.h"
+ 
+@@ -44,6 +47,7 @@
+ #include "vk_fsr3_inputs.h"
+ #include "reactive_policy.h"
+ #include "upscaler_rows.h"
++#include "linux_pressure.h"
+ #include "pcache_stamp.h"
+ #include "vk_reactive.h"   // (the upscalers' reactive mask: the scene copied before its transparent draws)
+ #include "vk_dump.h"
+@@ -2381,7 +2385,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
+     const bool predicted = fresh && predicted_key(key);
+     static const bool sync = env_on("RX_VK_SYNC_PIPELINES");
+     if (sync) {
+-        e->pipeline = build_graphics(p, s, at, topo);
++        if (program_cache_complete_graphics(p)) e->pipeline = build_graphics(p, s, at, topo);
+         e->ready = true;
+         return remember(e);
+     }
+@@ -2389,6 +2393,10 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
+     // when a library is cold: the entry stays not ready, and the draw is left out or waits for the full build)
+     uint64_t cold[2]{};
+     if (gpl_wanted() && !p.fallback) {
++        if (!program_cache_complete_graphics(p)) {
++            e->ready.store(true, std::memory_order_release);
++            return remember(e);
++        }
+         const auto t0 = std::chrono::steady_clock::now();
+         const VkPipeline linked = gpl_link(p, s, at, topo, cold);
+         st_link_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+@@ -2414,6 +2422,10 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
+         // (over a linked one or a quick one, which are left alone: draws recorded with them may still be on their way. Neither is
+         // destroyed: nothing here knows when the recordings that read the handle are done on the GPU, so a replaced quick
+         // pipeline stays for the session, one more per entry that got one, counted in quick_pipeline's log line)
++        if (!program_cache_complete_graphics(*job->p)) {
++            job->e->ready.store(true, std::memory_order_release);
++            return;
++        }
+         use_counters.made_how = 0;
+         VkPipeline full;
+         {   // (RX_VK_TEST_SLOW_MS: held inside the driver-fault gate, build_graphics)
+@@ -2449,7 +2461,7 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
+ /// shader, 3 fragment output
+ /// cold: made only if the driver has it compiled already; set, and nothing made, when it would have had to compile
+ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, bool* cold) {
+-    if (at.n < 0 || at.n > 8) return VK_NULL_HANDLE;   // (longshot: at most 8 colour targets)
++    if (at.n < 0 || at.n > 8 || program_modules_dropped(p)) return VK_NULL_HANDLE;   // (longshot: at most 8 colour targets)
+     const Shader::Info& vs = *vertex_info(p);
+     const auto t0 = std::chrono::steady_clock::now();
+     std::vector<VkPipelineShaderStageCreateInfo> stages;
+@@ -2761,7 +2773,7 @@ double pipe_wait_budget_ms() {
+ /// on each recording thread, but for a draw that cannot be left out (must). true: the entry has one to draw with
+ bool quick_pipeline(PipeEntry& e, const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, bool must) {
+     const double budget_ms = quick_budget_ms();
+-    if (budget_ms <= 0) return false;
++    if (budget_ms <= 0 || program_modules_dropped(p)) return false;
+     static thread_local quick_pipe::FrameBudget budget;
+     const auto now_ms = [] {
+         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+@@ -4245,6 +4257,14 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
+ struct Checkpoint { uint64_t prog; uint64_t frame; uint32_t seq; char kind; };
+ Checkpoint checkpoints[1 << 16];
+ std::atomic<uint32_t> checkpoint_n{0};
++// (Deckport) each marked program's stage codes, for the report (program_code_keys, noted once a program at its first draw)
++std::mutex marker_codes_mu;
++std::unordered_map<uint64_t, std::string> marker_codes;
++std::string marker_codes_of(uint64_t key) {
++    std::lock_guard lk(marker_codes_mu);
++    const auto it = marker_codes.find(key);
++    return it == marker_codes.end() ? std::string() : it->second;
++}
+ 
+ // (VK_AMD_buffer_marker, where the NV checkpoints are missing: marker i's sequence number goes to word 2i when the GPU
+ // reaches it and to word 2i + 1 once all the work before it is done. Host memory, not VRAM: a GPU reset loses VRAM.)
+@@ -4408,8 +4428,9 @@ void buffer_markers_report() {
+     logf("vk: device lost: %u markers set, %u reached; the last whose earlier work all finished: %u", n, reached, last_done);
+     const auto line = [](const char* what, uint32_t s) {
+         const Checkpoint& k = checkpoints[(s - 1) & 0xFFFF];
+-        logf("vk:   %s: marker %u (%s %016llx, frame %llu)", what, s, checkpoint_kind(k.kind), (unsigned long long)k.prog,
+-             (unsigned long long)k.frame);
++        const std::string codes = (k.kind == 'd' || k.kind == 'c' || k.kind == 'i') ? marker_codes_of(k.prog) : std::string();
++        logf("vk:   %s: marker %u (%s %016llx, frame %llu)%s%s", what, s, checkpoint_kind(k.kind), (unsigned long long)k.prog,
++             (unsigned long long)k.frame, codes.empty() ? "" : "; its code:", codes.c_str());
+     };
+     for (uint32_t s = last_done > 6 ? last_done - 6 : 1; last_done && s < last_done; s++) line("finished before", s);
+     // (from the last finished marker to the first reached one whose earlier work did not finish: what the GPU was running)
+@@ -4796,13 +4817,16 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
+                     std::find(footprint.begin(), footprint.end(), cur_program->key) != footprint.end();
+     // the viewport upside down (negative height): NVN's NDC has +y up, Vulkan's down
+     float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
++    // (Deckport, RX_VK_SHADOW_DIV: a pass into a shrunk depth target alone: the game's pixels divided)
++    const int32_t shr = (at.depth && at.depth->shrink > 1 && !at.n) ? (int32_t)at.depth->shrink : 1;
++    if (shr > 1) vx /= (float)shr, vy /= (float)shr, vw /= (float)shr, vh /= (float)shr;
+     if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
+     d.vp = {vx, vy + vh, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f), std::clamp(s.depth_far, 0.0f, 1.0f)};
+     d.sc = {{0, 0}, {at.width, at.height}};
+     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
+-        const int32_t x0 = std::max(0, s.scissor[0]), y0 = std::max(0, s.scissor[1]);
+-        const int32_t x1 = std::min<int32_t>(s.scissor[0] + s.scissor[2], (int32_t)at.width);
+-        const int32_t y1 = std::min<int32_t>(s.scissor[1] + s.scissor[3], (int32_t)at.height);
++        const int32_t x0 = std::max(0, s.scissor[0] / shr), y0 = std::max(0, s.scissor[1] / shr);
++        const int32_t x1 = std::min<int32_t>((s.scissor[0] + s.scissor[2] + shr - 1) / shr, (int32_t)at.width);
++        const int32_t y1 = std::min<int32_t>((s.scissor[1] + s.scissor[3] + shr - 1) / shr, (int32_t)at.height);
+         d.sc = {{x0, y0}, {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)}};
+     }
+     std::memcpy(d.blend, s.blend_color, sizeof d.blend);
+@@ -5259,7 +5283,15 @@ void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool dep
+     }
+     clear_after_draws(cmd);
+     begin_pass(cmd, at);
+-    const VkRect2D rect = clear_rect(s, at.width, at.height);
++    const uint32_t cshr = at.depth->shrink > 1 && !at.n ? at.depth->shrink : 1;   // (Deckport, RX_VK_SHADOW_DIV)
++    VkRect2D rect = clear_rect(s, at.width * cshr, at.height * cshr);
++    if (cshr > 1) {
++        const uint32_t x1 = std::min(at.width, (rect.offset.x + rect.extent.width + cshr - 1) / cshr);
++        const uint32_t y1 = std::min(at.height, (rect.offset.y + rect.extent.height + cshr - 1) / cshr);
++        rect.offset.x /= (int32_t)cshr, rect.offset.y /= (int32_t)cshr;
++        rect.extent.width = x1 > (uint32_t)rect.offset.x ? x1 - rect.offset.x : 0;
++        rect.extent.height = y1 > (uint32_t)rect.offset.y ? y1 - rect.offset.y : 0;
++    }
+     if (!rect.extent.width || !rect.extent.height) return;
+     VkClearAttachment ca{};
+     ca.aspectMask = aspect;
+@@ -6587,24 +6619,36 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
+     void* mapped = nullptr;
+     const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+-    // (the records' header is the vertex stage's indirect draw and the mesh stage's indirect dispatch)
+-    if (!create_buffer(records, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, f.records, f.records_mem, &mapped)) return false;
+-    f.records_address = fallback_buffer_address(f.records);
+-    f.records_bytes = records;
+-    if (!f.records_address) {
+-        destroy_buffer(f.records, f.records_mem);
+-        return false;
++    // (only the payload outgrown: the newest pair's records, which every program takes from, go with the bigger payload. Made
++    // again, each growth left another 64 MB arena on the thread for the session, that no draw used again)
++    const bool shared = !sets.empty() && sets.back().records && sets.back().records_bytes >= records;
++    const auto drop_records = [&] {
++        if (!shared) destroy_buffer(f.records, f.records_mem);
++    };
++    if (shared) {
++        const FallbackBuffers& last = sets.back();
++        f.records = last.records, f.records_mem = last.records_mem;
++        f.records_address = last.records_address, f.records_bytes = last.records_bytes;
++    } else {
++        // (the records' header is the vertex stage's indirect draw and the mesh stage's indirect dispatch)
++        if (!create_buffer(records, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, f.records, f.records_mem, &mapped)) return false;
++        f.records_address = fallback_buffer_address(f.records);
++        f.records_bytes = records;
++        if (!f.records_address) {
++            drop_records();
++            return false;
++        }
+     }
+     if (payload) {
+         if (!create_buffer(payload, usage, false, f.payload, f.payload_mem, &mapped)) {
+-            destroy_buffer(f.records, f.records_mem);
++            drop_records();
+             return false;
+         }
+         f.payload_address = fallback_buffer_address(f.payload);
+         f.payload_bytes = payload;
+         if (!f.payload_address) {
+             destroy_buffer(f.payload, f.payload_mem);
+-            destroy_buffer(f.records, f.records_mem);
++            drop_records();
+             return false;
+         }
+     }
+@@ -7189,6 +7233,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
+         // grid (a culling pass), until the kernel resets it at 10 s, in the Great Deku Tree and Kokiri Forest (issue 817). About
+         // 30 programs use it; RX_VK_SKIP_CODE=2c56dc1006942f74 leaves them out and the Deck plays without the hang, but without
+         // the models they draw too: a workaround, opt-in)
++        if (checkpoints_on()) {   // (Deckport: the codes for the markers' report)
++            std::lock_guard lk(marker_codes_mu);
++            if (marker_codes.find(cp->key) == marker_codes.end()) marker_codes.emplace(cp->key, program_code_keys(s));
++        }
+         static const char* skip_code_list = getenv("RX_VK_SKIP_CODE");
+         if (skip_code_list && *skip_code_list) {
+             static std::mutex memo_mu;
+@@ -9180,8 +9228,8 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
+         std::lock_guard lk(state_mu);
+         if (!state_file) state_open_locked();
+     }
+-    std::unordered_set<uint64_t> wanted;
+-    for (const auto& n : notes) wanted.insert(n->prog);
++    std::unordered_set<uint64_t> wanted, wanted_variants;
++    for (const auto& n : notes) wanted.insert(n->prog), wanted_variants.insert(mix(n->prog, n->variant));
+     // (the compute programs: those this install's play dispatched (longshot_computes.bin) and those the shipped state list names,
+     // each once; every kept one on a first start, with nothing dispatched yet: computes_plan)
+     const ComputePlan plan = computes_plan(getenv("RX_VK_PRECOMPILE_COMPUTES"), !env_on("RX_VK_NO_STATE_LIST"));
+@@ -9190,6 +9238,9 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
+     std::unordered_set<uint64_t> listed_here;   // (the listed keys this install has a program of)
+     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
+         ensure_layout(p);
++#ifdef __linux__
++        if (!p.compute && wanted_variants.count(mix(p.key, p.variant))) program_cache_note_built(p);   // (pipeline_cache_play)
++#endif
+         if (p.compute) {
+             computes.push_back(&p);
+             if (plan.keys.count(p.key)) listed_here.insert(p.key);
+@@ -10334,6 +10385,37 @@ int64_t draw_slotgen_saves() {   // (Descriptor reuse: of those, what the global
+ void pipeline_cache_play() {
+     play_cache_begin();
+     programs_play_begin();   // (the census: what is made from here on is made in play)
++#ifdef __linux__
++    // (longshot) On Linux with <= 20 GB of RAM (the Steam Deck's 16 GB shared memory and 16 GB PCs) or when memory pressure is
++    // already active (or RX_VK_DROP_MODULES=1), the VkShaderModules of ready programs whose pipelines were built in precompile_run
++    // (~37,000 modules, ~1.5-1.8 GB of uncompressed SPIR-V in the driver's heap) have done their work once precompile_run finishes.
++    // Any graphics program whose noted pipelines were built remakes its module from longshot_programs.bin
++    // (program_cache_complete_graphics) if play ever builds a new state variant; programs without a built graphics pipeline (not
++    // noted by program_cache_note_built) keep their vertex and fragment modules so in-play pipeline builds do not read the disk.
++    // 32-64 GB Linux desktops keep their modules by default so new pipeline variants in play never touch the disk.
++    // RX_VK_KEEP_MODULES=1 (or RX_VK_DROP_MODULES=0) keeps all
++    if (!env_on("LONGSHOT_PREPARE_ONLY") && !prepare_left_workers()) {
++        uint64_t avail_bytes = 0, swap_free_bytes = 0, total_bytes = 0;
++        bool has_swap = true;
++        uint64_t over = 0;
++        if (linux_pressure::read_meminfo(&avail_bytes, &swap_free_bytes, nullptr, &total_bytes, &has_swap)) {
++            over = linux_pressure::shortfall(avail_bytes, swap_free_bytes,
++                                             linux_pressure::avail_reserve(getenv("RX_VK_AVAIL_RESERVE_MB")),
++                                             linux_pressure::commit_reserve(getenv("RX_VK_COMMIT_RESERVE_MB")),
++                                             has_swap);
++        }
++        size_t dropped_modules = 0;
++        if (linux_pressure::should_drop_modules(total_bytes, over, getenv("RX_VK_KEEP_MODULES"), getenv("RX_VK_DROP_MODULES"))) {
++            dropped_modules = program_cache_drop_modules();
++            if (dropped_modules)
++                logf("vk: programs: %zu shader modules let go after the precompile (RX_VK_KEEP_MODULES=1 keeps them)",
++                     dropped_modules);
++        }
++#if defined(__GLIBC__)
++        if (dropped_modules) malloc_trim(0);
++#endif
++    }
++#endif
+ }
+ 
+ // ---- (longshot) What the programs' loader asks of the pipelines (vk_pipelines.h) ----
+diff --git a/gpu/vk/vk_draw.h b/gpu/vk/vk_draw.h
+index 344a2bbf..620681a5 100644
+--- a/gpu/vk/vk_draw.h
++++ b/gpu/vk/vk_draw.h
+@@ -91,6 +91,8 @@ int64_t draw_slotgen_saves();
+ /// RX_VK_FLASH_RECORD=<key>,...: the last frames' draws of those programs, written to the log for frames around a flash
+ void draw_records_log(uint64_t frame_lo, uint64_t frame_hi);
+ void pass_traces_log(uint64_t frame_lo, uint64_t frame_hi);   // (RX_VK_PASS_TRACE=1)
++/// (longshot) The latest Linux memory-pressure shortfall (bytes) and sample number from texture_frame() without holding pools_mu
++uint64_t linux_pressure_shortfall(uint64_t* seq = nullptr);
+ /// Changes with every uniform update the stream makes (vk_replay.cpp): descriptors bound before may be stale
+ uint64_t ub_generation();
+ /// A background thread (shader translation, pipeline builds) reads guest memory from the captures only, never the stream's
+diff --git a/gpu/vk/vk_internal.h b/gpu/vk/vk_internal.h
+index 159bfd0d..a245d032 100644
+--- a/gpu/vk/vk_internal.h
++++ b/gpu/vk/vk_internal.h
+@@ -321,6 +321,10 @@ uint64_t vk_timeline_completed();
+ /// A future submission completion covering images retired during replay; zero: no safe value.
+ uint64_t vk_retirement_value();
+ void vk_timeline_wait(uint64_t v);
++/// (vk_replay.cpp) Waits (at most timeout_ns) for one part of a submission recorded so far (Recording::part, as memory_recording_part
++/// gives it) to be done on the GPU: 1 when it is, 0 when the wait ran out, -1 when that part cannot be waited for (the recordings
++/// have no timeline of their own, RX_VK_PER_QUEUE_FENCES=0, no part number, or the part is not known)
++int vk_part_wait(uint64_t part, uint64_t timeout_ns);
+ uint32_t memory_generation();
+ /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
+ bool memory_written_since(uint64_t guest, uint64_t size, uint32_t gen);
+diff --git a/gpu/vk/vk_main.cpp b/gpu/vk/vk_main.cpp
+index 58d2982a..7657fc75 100644
+--- a/gpu/vk/vk_main.cpp
++++ b/gpu/vk/vk_main.cpp
+@@ -1207,6 +1207,10 @@ void prepare_with_screen() {
+     static std::atomic<bool> paint_stop{false};
+     HANDLE painted = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+     std::thread painter([t0, painted] {
++        auto deckport_startup_min = [] {   // (Deckport: a animação de entrada inteira, vk_deckport_startup.h kStartupMin)
++            const char* e = getenv("RX_VK_DECKPORT_STARTUP");
++            return !e || atoi(e) != 0 ? 4.2 : 0.0;
++        };
+         ProgressClock eta;   // (over the whole bar: its units, PrepareBar)
+         PrepareBar bar;
+         double next_log = 10;
+@@ -1247,8 +1251,8 @@ void prepare_with_screen() {
+                 last_w = w, last_h = h;
+             }
+             if (w && h) present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+-            if (finished || paint_stop.load()) break;
+-            Sleep(33);
++            if ((finished && secs >= deckport_startup_min()) || paint_stop.load()) break;
++            Sleep(16);
+         }
+         // (the end: a fade to black over 0.4 s, so the game's first frame comes out of black, not cut in over the screen; none
+         // after a screen of under 1.5 s, a blink, or when the window is not shown (paint_stop: its presents wait))
+diff --git a/gpu/vk/vk_memory.cpp b/gpu/vk/vk_memory.cpp
+index 4f92bb2f..144b2835 100644
+--- a/gpu/vk/vk_memory.cpp
++++ b/gpu/vk/vk_memory.cpp
+@@ -29,6 +29,7 @@
+ 
+ #include "vk_internal.h"
+ #include "vk_texture.h"   // (upload_command_buffer)
++#include "vk_draw.h"      // (linux_pressure_shortfall)
+ #include "vk_gprof.h"      // (RX_VK_PASS_TIMING)
+ #include "import_hold.h"
+ #include "mirror_budget.h"   // (mirror_budget's rule, by the card)
+@@ -37,6 +38,7 @@
+ #include "mirror_inherit.h"
+ #include "retired_give_back.h"
+ #include "sparse_mirror.h"
++#include "linux_pressure.h"
+ #include <atomic>
+ #include <unordered_set>
+ #ifdef __linux__
+@@ -995,6 +997,15 @@ void cap_buf_retire(std::map<uint32_t, CapBuf>::iterator it) {
+     cap_buf_free(it->second.buffer, it->second.alloc, it->second.map, it->second.size);
+     cap_bufs.erase(it);
+ }
++void cap_free_trim(uint64_t keep_bytes) {
++    std::lock_guard lk(cap_free_mu);
++    while (!cap_free.empty() && cap_free_bytes > keep_bytes) {
++        const FreeBuf f = cap_free.back();
++        cap_free.pop_back();
++        cap_free_bytes -= std::min(cap_free_bytes, f.size);
++        destroy_buffer(f.buffer, f.alloc);
++    }
++}
+ // (a capture's buffer by its size class: 2, 4, 8, then 16 MB and up to the MB. It was never under 16 MB, for captures of ~1 MB:
+ // 25 kept ones were 413 MB of host-cached system memory, all resident, and three to a 64 MB block left 14 MB of each unused.
+ // RX_VK_CAP_MIN_MB=<n>: the smallest (2), 16: as before. From 16 MB each has a memory object of its own: RX_VK_CAP_BLOCKS=1: not)
+@@ -2063,6 +2074,16 @@ bool shadow_follows_sync_on() {
+     static const bool on = [] { const char* e = getenv("RX_VK_SHADOW_FOLLOWS_SYNC"); return !e || !env_value_off(e); }();
+     return on;
+ }
++// (longshot) Always-on counts for the late pages' summary line, one for each way a late page's words or a CPU read of them go
++// (plain counters, pools_mu held; read and reset with the 600-recording line): reads on the CPU by branch, pages fixed by kind,
++// pages a mirror sync copied into a shadow, made known by it, and the ones left unknown because the replay or the collection
++// wrote them since (shadow_forgotten_last, set by the write-back's forget: pages the capture did not take)
++struct LateStats {
++    int64_t rd_fixed = 0, rd_earlier_rec = 0, rd_not_recorded = 0, rd_this_part = 0, fix_diff_pages = 0, fix_whole_pages = 0,
++            sync_pages = 0, sync_known = 0, sync_left_unknown = 0;
++} st_lfx;
++std::vector<uint32_t> shadow_forgotten_last;   // (sorted)
++bool shadow_forgotten_all = false;   // (the forget's lists overflowed: no page synced since is known to equal guest memory)
+ struct ShadowSynced { uint64_t lo, page; VkBuffer shadow; };
+ std::vector<ShadowSynced> shadow_synced;   // (synced since the last write-back's forget, into that shadow; pools_mu)
+ void shadow_sync_copy(VkCommandBuffer up, VkBuffer src, Pool& p, const std::vector<VkBufferCopy>& rs) {
+@@ -2074,14 +2095,27 @@ void shadow_sync_copy(VkCommandBuffer up, VkBuffer src, Pool& p, const std::vect
+     vkCmdCopyBuffer(up, src, p.shadow, (uint32_t)rs.size(), rs.data());
+     for (const VkBufferCopy& r : rs)
+         for (uint64_t pg = r.dstOffset >> kPageShift; r.size && pg <= (r.dstOffset + r.size - 1) >> kPageShift; pg++)
+-            shadow_synced.push_back({p.lo, pg, p.shadow});
+-}
+-void shadow_synced_known() {   // (after the write-back's forget: the pages synced since, known as the sync left them)
++            shadow_synced.push_back({p.lo, pg, p.shadow}), st_lfx.sync_pages++;
++}
++// (after the write-back's forget: the pages synced since, known as the sync left them. Not after a forget whose lists overflowed
++// (shadow_written_all: the pages written are not known, so none of the synced ones is), and not the ones the forget has just cleared
++// because the replay's own writes or the collection reported them since the capture: guest memory has newer words there than the
++// shadow, which holds the capture's. Known, they were not read into the shadow again at the write-back, and the diff pass wrote
++// the mirror's words of a span whole over guest memory's newer ones, which the late pages' fix then read as stamped words.
++// Left unknown they are read from guest memory at the next write-back that writes the page back)
++void shadow_synced_known() {
+     for (const ShadowSynced& s : shadow_synced) {   // (a shadow made since has not had the copy: shadow_synced_freed)
+         const auto it = imported.find(s.lo);
+         if (it == imported.end() || !it->second.shadow || it->second.shadow != s.shadow) continue;
+         std::vector<uint64_t>& known = it->second.shadow_known;
+-        if ((s.page >> 6) < known.size()) known[s.page >> 6] |= 1ull << (s.page & 63);
++        if ((s.page >> 6) >= known.size()) continue;
++        if (shadow_forgotten_all ||
++            std::binary_search(shadow_forgotten_last.begin(), shadow_forgotten_last.end(), (uint32_t)((s.lo >> kPageShift) + s.page))) {
++            st_lfx.sync_left_unknown++;
++            continue;
++        }
++        known[s.page >> 6] |= 1ull << (s.page & 63);
++        st_lfx.sync_known++;
+     }
+     shadow_synced.clear();
+ }
+@@ -2155,8 +2189,8 @@ struct LatePage {   // (a page with fixes: until they are done, a read of it on
+     uint64_t cap_value = 0;                                 // (its capture's value: the buffer kept under it, cap_bufs)
+     size_t first = 0, n = 0;                                // (its fixes in late_fixes, then in fix_map)
+     LateFix* fix_map = nullptr;
+-    VmaAllocation fix_alloc = nullptr;                      // (fix_map's table, and the recording part it was recorded in)
+-    uint64_t fix_part = 0, fix_end = 0;                     // (fix_end: the table's bytes up to its last fix)
++    VmaAllocation fix_alloc = nullptr;                      // (fix_map's table)
++    uint64_t fix_part = 0, fix_end = 0;                     // (fix_part: the recording part it was recorded in; fix_end: the table's bytes up to its last fix)
+ };
+ std::unordered_map<uint32_t, LatePage> late_pages;
+ // (pools_mu held; the slots all taken) the snapshots of pages not late for a whole copy in kSnapIdle recordings given back:
+@@ -2181,7 +2215,7 @@ struct LateFixTable { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation alloc = nullp
+ LateFixTable late_fix_tables[16];
+ int late_fix_next = 0;
+ struct { bool tried = false; VkPipelineLayout layout = VK_NULL_HANDLE; VkPipeline pipe = VK_NULL_HANDLE; } late_fix_pipe;
+-int64_t st_lf_takes, st_lf_fixed, st_lf_fell[8], st_lf_fixes, st_lf_pages, st_lf_cpu_reads, st_lf_no_table, st_lf_moved;
++int64_t st_lf_takes, st_lf_fixed, st_lf_fell[8], st_lf_fixes, st_lf_pages, st_lf_cpu_reads, st_lf_no_table, st_lf_moved, st_lf_part_waits, st_lf_part_fell;
+ bool late_fix_pipe_ready() {
+     if (late_fix_pipe.tried) return late_fix_pipe.pipe != VK_NULL_HANDLE;
+     late_fix_pipe.tried = true;
+@@ -2352,7 +2386,10 @@ bool late_fix_build(Capture& c) {
+             if (copied[i]) guarded_copy((uint8_t*)c.map + (uint64_t)i * 4096, base + ((uint64_t)c.pages[i] << kPageShift), 4096);
+         flush_mapped(c.alloc, c.nbytes);
+     }
+-    for (auto& [pg, lp] : pages) late_pages[pg] = lp, late_built.push_back(pg);
++    for (auto& [pg, lp] : pages) {
++        late_pages[pg] = lp, late_built.push_back(pg);
++        (lp.stamp_key != UINT64_MAX ? st_lfx.fix_diff_pages : st_lfx.fix_whole_pages)++;
++    }
+     st_lf_fixed++, st_lf_pages += (int64_t)pages.size(), st_lf_fixes += (int64_t)(late_fixes.size() - late_built_mark);
+     return true;
+ }
+@@ -2378,33 +2415,53 @@ void late_fix_kept(bool kept, uint64_t value) {
+ }
+ // (pools_mu held) a read on the CPU of a page in a capture's buffer whose late page has a fix: it reads what the GPU's copies
+ // out of the buffer read. Fixed already: the buffer as the fix left it. Recorded in a submission before this one: that one
+-// waited for, then the same. Not recorded, or recorded in this recording's part not yet submitted: its fix dropped, and it
+-// waits and is copied again, as before, for both. Recorded in an earlier part of this submission (not to be waited for
+-// here): it waits and is copied again; the fix then writes the same write-backs' words over it on the GPU
++// waited for, then the same. Recorded in an earlier part of this submission (parts go to the GPU while the later ones are
++// recorded: that part's fix may be running, or run after this read): that part waited for (it is submitted, so the wait
++// cannot be for work nobody sends), then the same, and nothing is written to the capture. A fix left to run over a page
++// copied again here would put the write-backs' words back over the words the game's thread wrote after they landed
++// (late_fix_cpu_read of the PR 248 nightlies did). Not recorded yet, or recorded in this part (not submitted: the GPU has not
++// read its table): its fix dropped (the table's counts 0), and the page waits and is copied again, as before. The same for
++// an earlier part that cannot be waited for: vk_part_wait says so only when the recordings have no timeline of their own or
++// RX_VK_PER_QUEUE_FENCES=0 (no device and no OS decides it), and then the table's counts are zeroed while the GPU may be
++// reading it: that is the race this way has, and the log's late-fix line counts those reads ("after the wait of an earlier
++// part" and "of them copied again, not waited for"). A wait that ran past kPartWaitGuard (a hang guard, logged) is not
++// repeated for that part
++constexpr uint64_t kPartWaitGuard = 5000000000ull;   // (ns)
+ void late_fix_cpu_read(uint32_t page, VkBuffer buffer, uint8_t* slot) {
+     if (late_pages.empty()) return;
+     const auto it = late_pages.find(page);
+     if (it == late_pages.end() || it->second.buffer != buffer || it->second.slot != slot) return;
+     LatePage& lp = it->second;
+-    const auto again = [&] {
++    static uint64_t part_wait_failed = 0;   // (a part waited for past the guard is not waited for again)
++    bool fixed = lp.fix_value && lp.fix_value <= mem_completed;   // (the buffer is as the fix left it)
++    if (fixed) st_lfx.rd_fixed++;
++    if (!fixed && lp.fix_value && lp.fix_value < mem_rec_value) vk_timeline_wait(lp.fix_value), fixed = true, st_lfx.rd_earlier_rec++;
++    if (!fixed && lp.fix_value && lp.fix_part && lp.fix_part != mem_rec_part.load()) {   // (an earlier part of this recording)
++        const int waited = lp.fix_part == part_wait_failed ? 0 : vk_part_wait(lp.fix_part, kPartWaitGuard);
++        if (waited > 0) fixed = true, st_lf_part_waits++;
++        else {
++            st_lf_part_fell++;
++            if (waited == 0 && lp.fix_part != part_wait_failed) {
++                part_wait_failed = lp.fix_part;
++                logf("vk: late pages' fix: part %llu not done after %llu s: its pages are copied again", (unsigned long long)lp.fix_part,
++                     (unsigned long long)(kPartWaitGuard / 1000000000ull));
++            }
++        }
++    }
++    if (fixed) {
++        invalidate_mapped(lp.alloc, lp.nbytes);
++    } else {
++        if (!lp.fix_value) {
++            st_lfx.rd_not_recorded++;
++            for (size_t k = lp.first; k < lp.first + lp.n && k < late_fixes.size(); k++) late_fixes[k].count = 0;
++        } else if (lp.fix_map) {
++            if (lp.fix_part == mem_rec_part.load()) st_lfx.rd_this_part++;
++            for (size_t k = 0; k < lp.n; k++) lp.fix_map[k].count = 0;
++            flush_mapped(lp.fix_alloc, lp.fix_end);
++        }
+         vk_timeline_wait(lp.late_value);
+         guarded_copy(slot, (uint8_t*)host->guest_base() + ((uint64_t)page << kPageShift), 4096);
+         flush_mapped(lp.alloc, lp.nbytes);
+-    };
+-    if (lp.fix_value && lp.fix_value <= mem_completed) {
+-        invalidate_mapped(lp.alloc, lp.nbytes);
+-    } else if (lp.fix_value && lp.fix_value < mem_rec_value) {
+-        vk_timeline_wait(lp.fix_value);
+-        invalidate_mapped(lp.alloc, lp.nbytes);
+-    } else if (!lp.fix_value) {
+-        for (size_t k = lp.first; k < lp.first + lp.n && k < late_fixes.size(); k++) late_fixes[k].count = 0;
+-        again();
+-    } else if (lp.fix_part == mem_rec_part.load() && lp.fix_map) {
+-        for (size_t k = 0; k < lp.n; k++) lp.fix_map[k].count = 0;
+-        flush_mapped(lp.fix_alloc, lp.fix_end);
+-        again();
+-    } else {
+-        again();
+     }
+     st_lf_cpu_reads++;
+     late_pages.erase(it);
+@@ -2507,13 +2564,20 @@ void late_fix_emit() {
+         logf("vk: late pages' fix (600 recordings with one): of %lld captures with late pages %lld fixed (%.1f pages, %.1f fixes "
+              "a capture), waited as before: %lld no pool, %lld no stamps or shadow yet, %lld stamps too new, %lld "
+              "whole copies, %lld in place or unknown, %lld a page's earlier fix not recorded yet, %lld other; %lld read on the CPU first, %lld with no table, %lld pages whose shadow changed "
+-             "first; stamps %zu blocks (%llu KB)",
++             "first; stamps %zu blocks (%llu KB); of the reads on the CPU, %lld waited for an earlier part's fix, %lld copied the page "
++             "again instead (that part not waited for); the paths: reads on the CPU with the fix done %lld, of an earlier recording %lld, "
++             "not recorded yet %lld, of this part %lld; pages fixed from stamps %lld, from snapshots %lld; the shadows: %lld pages "
++             "synced from captures, %lld made known by it, %lld left unknown because the replay or the collection wrote them since",
+              (long long)st_lf_takes, (long long)st_lf_fixed, st_lf_fixed ? (double)st_lf_pages / st_lf_fixed : 0.0,
+              st_lf_fixed ? (double)st_lf_fixes / st_lf_fixed : 0.0, (long long)st_lf_fell[1],
+              (long long)st_lf_fell[3], (long long)st_lf_fell[4], (long long)st_lf_fell[5], (long long)st_lf_fell[6],
+              (long long)st_lf_fell[2], (long long)st_lf_fell[0], (long long)st_lf_cpu_reads, (long long)st_lf_no_table, (long long)st_lf_moved, stamp_blocks.size(),
+-             (unsigned long long)(stamp_bytes >> 10));
+-        st_lf_takes = st_lf_fixed = st_lf_pages = st_lf_fixes = st_lf_cpu_reads = st_lf_no_table = st_lf_moved = 0;
++             (unsigned long long)(stamp_bytes >> 10), (long long)st_lf_part_waits, (long long)st_lf_part_fell,
++             (long long)st_lfx.rd_fixed, (long long)st_lfx.rd_earlier_rec, (long long)st_lfx.rd_not_recorded, (long long)st_lfx.rd_this_part,
++             (long long)st_lfx.fix_diff_pages, (long long)st_lfx.fix_whole_pages, (long long)st_lfx.sync_pages, (long long)st_lfx.sync_known,
++             (long long)st_lfx.sync_left_unknown);
++        st_lf_takes = st_lf_fixed = st_lf_pages = st_lf_fixes = st_lf_cpu_reads = st_lf_no_table = st_lf_moved = st_lf_part_waits = st_lf_part_fell = 0;
++        st_lfx = LateStats{};
+         for (int64_t& f : st_lf_fell) f = 0;
+     }
+ }
+@@ -3962,6 +4026,63 @@ void note_direct_write(Pool& p, uint64_t off, uint64_t size) {   // (pools_mu he
+         wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value, 0);
+ }
+ 
++// (Deckport) RX_VK_BIND_SNAPSHOT_KB: a read binding of a pool with no mirror, up to that many KB, is served from a copy
++// of its bytes as submitted, in the recording's stream (patches/patch_bind_snapshot.py)
++uint64_t bind_snapshot_max() {
++    static const uint64_t n = [] {
++        const char* e = getenv("RX_VK_BIND_SNAPSHOT_KB");
++        const uint64_t kb = e ? (uint64_t)std::max(0, atoi(e)) : 0;
++        if (kb) logf("vk: read bindings of pools with no mirror copied as submitted, up to %llu KB each (RX_VK_BIND_SNAPSHOT_KB)",
++                     (unsigned long long)kb);
++        return kb << 10;
++    }();
++    return n;
++}
++int64_t st_snap_binds, st_snap_bytes, st_snap_big, st_snap_big_bytes, st_snap_failed;
++int64_t st_snap_gpu, st_snap_again;
++/// (pools_mu held) the copy, or nothing: over the size, a pool the GPU writes, no recording, no room in its stream.
++/// A pool the GPU wrote in guest memory in the last 4000 submissions is left alone: the copy is made on the CPU while
++/// the replay records, before the GPU has run the writes recorded ahead of it, and would hold the bytes from before
++/// them (measured: copying those too took a scene from 182 flashes to 1,577). The same range bound again in a
++/// submission gets the copy made for it before (one recording held 98 MB of copies without this)
++BufferRef bind_snapshot(const Pool& p, uint64_t gpu, uint64_t guest, uint64_t size) {
++    const uint64_t max = bind_snapshot_max();
++    if (!max || !size) return {};
++    if (size > max) {
++        st_snap_big++, st_snap_big_bytes += size;
++        return {};
++    }
++    if (p.direct_write_epoch && mirror_epoch - p.direct_write_epoch < 4000) {
++        st_snap_gpu++;
++        return {};
++    }
++    struct Made { uint64_t stamp = 0; std::unordered_map<uint64_t, BufferRef> at; };
++    static thread_local Made made;
++    if (made.stamp != mirror_epoch) made.stamp = mirror_epoch, made.at.clear();
++    const uint64_t key = guest * 0x9E3779B97F4A7C15ull ^ size;
++    if (const auto it = made.at.find(key); it != made.at.end() && it->second.size == size) {
++        st_snap_again++;
++        return it->second;
++    }
++    static thread_local std::vector<uint8_t> tmp;
++    if (tmp.size() < size) tmp.resize(size);
++    if (!host->gpu_read(gpu, tmp.data(), size)) return {};
++    if (capture_on() && captures_seen.load(std::memory_order_relaxed)) {   // (as memory_read_as_submitted, the lock held already)
++        for (uint64_t page = guest >> kPageShift; page < (guest + size + 4095) >> kPageShift; page++) {
++            const CapEntry e = cap_entry(page);
++            if (!e.gen || e.gen != page_gen(page)) continue;
++            auto b = cap_bufs.find(e.gen);
++            if (b == cap_bufs.end() || !b->second.map) continue;
++            const uint64_t a = std::max(page << kPageShift, guest), z = std::min((page + 1) << kPageShift, guest + size);
++            std::memcpy(tmp.data() + (a - guest), (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096 + (a - (page << kPageShift)), z - a);
++        }
++    }
++    const BufferRef r = stream_copy(tmp.data(), size);
++    if (r) st_snap_binds++, st_snap_bytes += size, made.at[key] = r;
++    else st_snap_failed++;
++    return r;
++}
++
+ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+     if (written) texture_gpu_wrote(gpu, size);
+     // (below 1 TB a GPU address is the guest address itself, and a pool holds the whole range or nothing: the host's
+@@ -3994,7 +4115,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+         Pool* p = tl.p;
+         const uint64_t off = guest - p->lo;
+         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+-        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED) {
++        const bool snap = bind_snapshot_max() && mirror_upload && p->mstate != Pool::MIRROR_ON;   // (Deckport: below, under the lock)
++        if (!snap && (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED)) {
+             note_in_place_read(!mirror_upload);
+             return remember({p->buffer, off, size, 0});
+         }
+@@ -4025,6 +4147,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+     const uint64_t off = guest - p->lo;
+     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
++        if (!written && mirror_upload && p->direct_write_epoch != mirror_epoch)   // (Deckport)
++            if (const BufferRef r = bind_snapshot(*p, gpu, guest, size)) return r;
+         if (written) note_direct_write(*p, off, size);
+         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; direct_bytes_by_pool[p->lo] += size; }
+         // (longshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
+@@ -4054,6 +4178,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+         mirror_wanted.push_back(p);
+     }
+     if (p->mstate != Pool::MIRROR_ON) {
++        if (!written && p->direct_write_epoch != mirror_epoch)   // (Deckport)
++            if (const BufferRef r = bind_snapshot(*p, gpu, guest, size)) return r;
+         auto& e = direct_by_pool[p->lo];
+         e.first++, e.second = (int)p->mstate;
+         direct_bytes_by_pool[p->lo] += size;
+@@ -4324,6 +4450,7 @@ void mirrors_give_back(uint64_t want_bytes) {   // (pools_mu held)
+ // play: the pools given back were long unbound.) ----
+ bool system_heap_usage(uint64_t* used, uint64_t* budget);   // (vk_vma.cpp)
+ std::deque<std::map<uint64_t, Pool>::node_type> evicted_pools;
++uint64_t evicted_import_bytes = 0;
+ int64_t st_imports_evicted = 0;
+ uint64_t st_import_bytes_evicted = 0;
+ constexpr uint64_t kImportIdle = 600;
+@@ -4331,6 +4458,7 @@ constexpr uint64_t kImportIdle = 600;
+ void imports_give_back() {   // (pools_mu held)
+     while (!evicted_pools.empty() && evicted_pools.front().mapped().retired_value <= mem_completed) {
+         Pool& p = evicted_pools.front().mapped();
++        evicted_import_bytes -= std::min(evicted_import_bytes, p.hi - p.lo);
+         destroy_import_buffer(p.buffer);
+         vkFreeMemory(dev.device, p.memory, nullptr);
+         for (VkDeviceMemory m : p.pieces) vkFreeMemory(dev.device, m, nullptr);   // (a pool imported as several dma-bufs)
+@@ -4391,7 +4519,25 @@ void imports_give_back() {   // (pools_mu held)
+     if (retired_mode() == retired_give_back::Mode::GRACE) used = retired_give_back::settled(used, dead_import_bytes);
+     if (grace) used = retired_give_back::settled(used, evicted_waiting);   // (held for their wait: given back already)
+     const uint64_t want = retired_give_back::want(used, cap, high, low);
+-    if (!want) return;
++    // (and under Linux memory pressure, once per /proc/meminfo sample (vk_texture.cpp texture_frame): the shortfall less what is
++    // on its way back already, and over one episode of pressure no more in all than its deepest shortfall: linux_pressure.h
++    // episode_want. Said in lines of its own, not as the system heap's)
++    uint64_t linux_want = 0, over_seq = 0;
++    static uint64_t last_over_seq = 0, episode_deepest = 0, episode_given = 0;
++    if (const uint64_t over = linux_pressure_shortfall(&over_seq)) {
++        if (over_seq != last_over_seq) {
++            last_over_seq = over_seq;
++            cap_free_trim(32ull << 20);
++            episode_deepest = std::max(episode_deepest, over);
++            linux_want = linux_pressure::episode_want(linux_pressure::import_want(over, dead_import_bytes + evicted_import_bytes),
++                                                      episode_deepest, episode_given);
++        }
++    } else {
++        episode_deepest = episode_given = 0;   // (out of pressure: the next episode starts afresh)
++    }
++    const bool for_linux = linux_want > want;
++    const uint64_t want_bytes = std::max(want, linux_want);
++    if (!want_bytes) return;
+     std::vector<std::map<uint64_t, Pool>::iterator> idle;
+     for (auto it = imported.begin(); it != imported.end(); ++it) {
+         const Pool& p = it->second;
+@@ -4403,20 +4549,27 @@ void imports_give_back() {   // (pools_mu held)
+     uint64_t freed = 0;
+     int n = 0;
+     for (auto it : idle) {
+-        if (freed >= want) break;
++        if (freed >= want_bytes) break;
+         Pool& p = it->second;
+         guest_pages_set(p.lo, p.hi, 0);
+         p.retired_value = mem_rec_value;   // (this submission's recording is being made: freed once it is done)
+         if (grace) p.retired_value = ~0ull, p.retired_ms = import_now_ms();   // (AMD, Intel on Windows: after the wait, above)
+         freed += p.hi - p.lo;
++        evicted_import_bytes += p.hi - p.lo;
+         n++;
+         evicted_pools.push_back(imported.extract(it));
+     }
++    if (for_linux) episode_given += freed - std::min(freed, want);
+     if (!n) {
+         static int logged_none;
+-        if (logged_none++ < 8)
+-            logf("vk: system heap %llu of %llu MB: no idle import to give back (%zu imported)", (unsigned long long)(used >> 20),
+-                 (unsigned long long)(budget >> 20), imported.size());
++        if (logged_none++ < 8) {
++            if (for_linux)
++                logf("vk: memory pressure on Linux: no idle import to give back for %llu MB (%zu imported)",
++                     (unsigned long long)(linux_want >> 20), imported.size());
++            else
++                logf("vk: system heap %llu of %llu MB: no idle import to give back (%zu imported)", (unsigned long long)(used >> 20),
++                     (unsigned long long)(budget >> 20), imported.size());
++        }
+         return;
+     }
+     pools_gen++;
+@@ -4424,11 +4577,21 @@ void imports_give_back() {   // (pools_mu held)
+     std::fill(std::begin(pool_cache), std::end(pool_cache), nullptr);
+     if (mirror_on()) publish_cap_ranges();
+     st_imports_evicted += n, st_import_bytes_evicted += freed;
+-    static int logged;
+-    if (logged++ < 40 || logged % 64 == 0)
+-        logf("vk: system heap %llu of %llu MB: %d idle imports given back (%llu MB); %lld (%llu MB) in all",
+-             (unsigned long long)(used >> 20), (unsigned long long)(budget >> 20), n, (unsigned long long)(freed >> 20),
+-             (long long)st_imports_evicted, (unsigned long long)(st_import_bytes_evicted >> 20));
++    if (for_linux) {
++        static int logged_linux;
++        if (logged_linux++ < 8 || logged_linux % 16 == 0)
++            logf("vk: memory pressure on Linux: %d idle imports given back (%llu MB of %llu MB asked; %llu MB in this episode, "
++                 "deepest shortfall %llu MB); %lld (%llu MB) in all (RX_VK_AVAIL_RESERVE_MB, RX_VK_COMMIT_RESERVE_MB)",
++                 n, (unsigned long long)(freed >> 20), (unsigned long long)(linux_want >> 20),
++                 (unsigned long long)(episode_given >> 20), (unsigned long long)(episode_deepest >> 20),
++                 (long long)st_imports_evicted, (unsigned long long)(st_import_bytes_evicted >> 20));
++    } else {
++        static int logged;
++        if (logged++ < 40 || logged % 64 == 0)
++            logf("vk: system heap %llu of %llu MB: %d idle imports given back (%llu MB); %lld (%llu MB) in all",
++                 (unsigned long long)(used >> 20), (unsigned long long)(budget >> 20), n, (unsigned long long)(freed >> 20),
++                 (long long)st_imports_evicted, (unsigned long long)(st_import_bytes_evicted >> 20));
++    }
+ }
+ 
+ // ---- (longshot) an import trimmed back to the game's live pools (mirror_trim.h) ----
+@@ -5214,6 +5377,7 @@ void shadows_forget_written() {
+     if (all)   // (written for a long while with no write-back to read the list: nothing of guest memory is known)
+         for (auto& [lo, pool] : imported)
+             if (pool.shadow) std::fill(pool.shadow_known.begin(), pool.shadow_known.end(), 0ull);
++    shadow_forgotten_last.clear(), shadow_forgotten_all = all;
+     if (!shadow_bytes) return;
+     // (in this order, each page counted under the first that reports it: the collection's and the replay's counts are what the
+     // captures alone would have left known)
+@@ -5240,6 +5404,12 @@ void shadows_forget_written() {
+             bits &= ~(1ull << (i & 63));
+         }
+     }
++    // (the pages the capture did not take that were written since: the replay's own writes and the collection's, for the late
++    // pages' summary line: a page synced from a capture and also in these has newer words in guest memory than the shadow)
++    shadow_forgotten_last.clear();
++    shadow_forgotten_last.insert(shadow_forgotten_last.end(), collected.begin(), collected.end());
++    shadow_forgotten_last.insert(shadow_forgotten_last.end(), replay.begin(), replay.end());
++    std::sort(shadow_forgotten_last.begin(), shadow_forgotten_last.end());
+ }
+ // (the pass's pipeline: 24 bytes of push constants and no descriptors, its buffers by address; made once)
+ struct WbdPipe {
+@@ -5534,6 +5704,13 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
+                 s += b;
+             }
+             logf("vk:   read live, by pool:%s", s.c_str());
++            if (bind_snapshot_max()) {   // (Deckport)
++                static int64_t l_n, l_b, l_big, l_bigb;
++                logf("vk:   bind snapshots (600 submits): %lld copied, %.1f MB; %lld over the size left in guest memory, %.0f MB; %lld with no room; in all %lld bound again, %lld of pools the GPU writes",
++                     (long long)(st_snap_binds - l_n), (st_snap_bytes - l_b) / 1048576.0, (long long)(st_snap_big - l_big),
++                     (st_snap_big_bytes - l_bigb) / 1048576.0, (long long)st_snap_failed, (long long)st_snap_again, (long long)st_snap_gpu);
++                l_n = st_snap_binds, l_b = st_snap_bytes, l_big = st_snap_big, l_bigb = st_snap_big_bytes;
++            }
+             live_by_pool.clear();
+             // (and the bindings the GPU read in guest memory itself: pools with no mirror yet, or none (state 9: bound
+             // outside a recording))
+diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
+index 55df2217..6ad7ae5a 100644
+--- a/gpu/vk/vk_menu.cpp
++++ b/gpu/vk/vk_menu.cpp
+@@ -27,6 +27,8 @@
+ #include <thread>
+ #include <system_error>
+ #include <vector>
++#include <deque>
++#include <climits>
+ 
+ #include "vk_paths.h"
+ #include "vk_menu.h"
+@@ -90,7 +92,8 @@ enum MenuTab {
+     TAB_COUNT = 5,
+     TAB_MOTION = TAB_COUNT,   // (longshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
+                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
+-    TAB_PAGE = TAB_MOTION + 1   // (longshot: the Controls page's rows, above its grid; no tab shows them)
++    TAB_PAGE = TAB_MOTION + 1,   // (longshot: the Controls page's rows, above its grid; no tab shows them)
++    TAB_DECKPORT = TAB_PAGE + 1   // (Deckport: as opções do menu do port, gravadas no ini; nenhuma aba as mostra)
+ };
+ 
+ struct Row {
+@@ -1497,6 +1500,11 @@ Row rows[] = {
+      "upscaler, the plain window scale without sharpening, the handheld profile, smaller textures, Intel's shaders "
+      "one at a time and quick compute builds. The handheld profile applies after a restart."},
+     // (longshot) the Gameplay tab's Bug report (vk_bug_report.h): A or Enter writes the report's folder; the help says what is in it
++    {TAB_DECKPORT, "Deckport preset", &opts.dp_preset, 0, 4, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport distance", &opts.dp_distance, 0, 4, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport grass", &opts.dp_grass, 0, 2, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport shadows", &opts.dp_shadows, 0, 2, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport textures", &opts.dp_textures, 0, 1, 1, nullptr, "", nullptr, false, true},
+     {TAB_GAMEPLAY, "Bug report", nullptr, 0, 0, 0, nullptr,
+      "Saves what an issue needs in a new folder, bug-reports in the game folder: report.txt with the issue form's answers (this "
+      "version, where you are, your graphics card and driver, CPU, RAM and system, the options and switches you changed), the logs "
+@@ -4004,7 +4012,14 @@ float menu_ox = 0;   // (the menu's column's left edge in the window: more than
+ /// The menu: the game dimmed across the whole window, the pages in a column as wide as a 16:9 screen of this height, in the
+ /// middle (a window of 16:9 or narrower: the whole of it). The pages draw from 0 as on 16:9; their vertices and clip
+ /// rectangles are moved over after, and menu_tick moves the mouse back by menu_ox before it tests the hits
++#include "vk_deckport_menu.h"
+ void draw_menu(ui::Ctx& c) {
++    if (dp::on() && page == 0) {   // (Deckport: a tela inteira, no visual do jogo)
++        menu_ox = 0;
++        hits.clear(0, 0, c.w, c.h);
++        dp::paint(c);
++        return;
++    }
+     if (!(tune_mode && page == 0)) c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(8, 5, 2, ui::kDimAlpha));   // (the game behind, dimmed)
+     ui::Ctx k = c;
+     k.w = std::min(c.w, std::floor(c.h * 16.0f / 9.0f + 0.5f));
+@@ -4289,7 +4304,17 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
+ 
+ /// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
+ /// is under the logo at 0.86 of the logo's scale. startup_fade, 0 to 1, darkens it all to black as it ends
++#include "vk_deckport_startup.h"
+ void draw_startup(ui::Ctx& c) {
++    if (dp::startup_on()) {   // (Deckport: a tela de abertura do port)
++        StartupView dv;
++        {
++            std::lock_guard lk(startup_mu);
++            dv = startup;
++        }
++        dp::paint_startup(c, dv, startup_fade.load(std::memory_order_relaxed));
++        return;
++    }
+     StartupView v;
+     {
+         std::lock_guard lk(startup_mu);
+@@ -5168,7 +5193,7 @@ void menu_tick() {
+         menu_keys::confirm_back(host->binding(HOS_BIND_PAD, HOS_SW_A, 0), host->binding(HOS_BIND_PAD, HOS_SW_B, 0), &pad_confirm,
+                                 &pad_back);
+     pad_paste = menu_keys::paste(pad_confirm, pad_back);   // (longshot: a text field's paste, on a button neither is on)
+-    if (pad(HOS_PAD_GUIDE) || chord_now) press[0] = true;
++    if (chord_now) press[0] = true;   // (Deckport: sem o Guide, o botão Steam é da Steam)
+     {   // holding an arrow or the D-pad repeats it: after 0.35 s, 12 a second, then 30 a second after 1.5 s held
+         static int64_t held_since[5], next_repeat[5];
+         const int pads[5] = {0, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT, HOS_PAD_RIGHT};
+@@ -5472,6 +5497,9 @@ void menu_tick() {
+             else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, kTeleports - 1);
+             if (teleport_choice != was) teleport_follow = true, changed = true;
+         }
++    } else if (open_now.load() && dp::on() && page == 0) {   // (Deckport: a navegação do menu do port)
++        const bool y_pad = listening != 1 && (pad_press >> HOS_PAD_NORTH & 1) != 0;
++        dp::tick(press, tab_left, tab_right, y_pad, mouse, mx, my, mouse ? ptr.pressed : 0, mine);
+     } else if (open_now.load()) {
+         if (mouse) {   // (the mouse: see the top of this file)
+             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
+@@ -5671,10 +5699,12 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+ 
+ void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
+     const bool open = open_now.load(std::memory_order_relaxed);
+-    const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
+-    if (!open && !fps) return;
++    const bool dp_test = dp::startup_test();   // (Deckport: a tela de abertura nas capturas de teste)
++    const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire) && !dp_test;
++    if (!open && !fps && !dp_test) return;
+     if (!ui::begin(w, h)) return;
+     ui::Ctx c = ui_ctx(w, h);
++    if (dp_test) draw_startup(c);
+     if (open) draw_menu(c);
+     if (fps) draw_fps(c, open);
+     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
+diff --git a/gpu/vk/vk_menu.h b/gpu/vk/vk_menu.h
+index a6a6e8ee..129b9d79 100644
+--- a/gpu/vk/vk_menu.h
++++ b/gpu/vk/vk_menu.h
+@@ -109,6 +109,11 @@ struct Options {
+     int game_lang = 0;    // the game's language (vk_menu_i18n.h game_lang_code): language.txt's, not kept in the options file
+     int menu_lang = 0;    // this menu's language: 0 Auto (the game's own, language.txt), else menu_i18n::kLangs[menu_lang - 1]
+                           // (vk_menu_i18n.cpp). Saved as menu_language
++    int dp_preset = 1;    // (Deckport) predefinição: 0 Qualidade, 1 Equilibrado, 2 Desempenho, 3 Bateria, 4 Personalizado
++    int dp_distance = 2;  // (Deckport) distância de desenho: 0 Perto .. 4 Original (rodar-zelda.sh: o mod de vegetação)
++    int dp_grass = 0;     // (Deckport) grama: 0 50%, 1 75%, 2 original
++    int dp_shadows = 1;   // (Deckport) sombras: 0 original, 1 média (RX_VK_SHADOW_DIV=2), 2 baixa (4)
++    int dp_textures = 1;  // (Deckport) texturas: 0 altas (mod 1024), 1 médias (mod 512)
+     int mic = 1;          // (longshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
+     int skip_title = 0;   // (longshot) start with the most recent save, pressing through the title and its file list (host/oot_autoload.c); read at the start
+ };
+diff --git a/gpu/vk/vk_progcache.cpp b/gpu/vk/vk_progcache.cpp
+index d981084e..a985662b 100644
+--- a/gpu/vk/vk_progcache.cpp
++++ b/gpu/vk/vk_progcache.cpp
+@@ -492,8 +492,14 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
+             Stage& st = p->stages.back();
+             st.nvn_stage = r.get<int>();
+             st.vk_stage = r.get<VkShaderStageFlagBits>();
++            const uint8_t* const code_p = r.p;
+             std::vector<uint32_t> spirv;
+             r.list(spirv);
++            if (!(d.kind & kCompressedKind) && !spirv.empty()) {
++                st.code_at = d.at + (int64_t)(code_p + 8 - payload);
++                st.code_words = spirv.size();
++                st.record_at = d.at, st.record_size = d.size;
++            }
+             r.list(st.c1);
+             get_info(r, st.info);
+             if (r.bad || spirv.empty()) {
+@@ -848,6 +854,178 @@ void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn)
+     }
+ }
+ 
++// (longshot) Which programs' graphics modules program_cache_drop_modules let go, and which of those did not make again: kept
++// here and not in Program, whose size is part of the translator's stamp (vk_shader.cpp translator_stamp, abi[]): members added
++// there made every player prepare every shader again at the first start after the update (251.6 s on a Steam Deck). By key and
++// variant, with the program let go beside them: one borrowed for the prepare (program_cache_borrow) has the same key and
++// variant as the one in play, and its own modules. The programs in play live for the session, so an entry does not outlive
++// its program. mu is taken last (after shader_mu and light_mu), and nothing is taken under it
++namespace module_remake {
++struct KeyVariant {
++    uint64_t key = 0, variant = 0;
++    bool operator==(const KeyVariant& o) const { return key == o.key && variant == o.variant; }
++};
++struct KeyVariantHash {
++    size_t operator()(const KeyVariant& k) const { return (size_t)(k.key ^ (k.variant * 0x9E3779B97F4A7C15ull)); }
++};
++struct Dropped {
++    const Program* program = nullptr;   // (the program whose graphics modules were let go)
++    bool failed = false;                // (they did not read or make again: its new pipeline states are left out, not its built ones)
++};
++std::mutex mu;
++std::unordered_set<KeyVariant, KeyVariantHash> built;   // (precompile_run built their noted graphics pipelines)
++std::unordered_map<KeyVariant, Dropped, KeyVariantHash> dropped;
++std::atomic<bool> any{false};   // (set by program_cache_drop_modules: until then, and on Windows, nothing here is looked up)
++}   // namespace module_remake
++
++void program_cache_note_built(const Program& p) {
++    const module_remake::KeyVariant kv{p.key, p.variant};
++    std::lock_guard rk(module_remake::mu);
++    module_remake::built.insert(kv);
++}
++
++bool program_modules_dropped(const Program& p) {
++    if (!module_remake::any.load(std::memory_order_acquire)) return false;
++    const module_remake::KeyVariant kv{p.key, p.variant};
++    std::lock_guard rk(module_remake::mu);
++    const auto it = module_remake::dropped.find(kv);
++    return it != module_remake::dropped.end() && it->second.program == &p;
++}
++
++bool program_cache_complete_graphics(const Program& prog) {
++    if (prog.failed) return false;
++    if (!module_remake::any.load(std::memory_order_acquire)) return true;
++    const module_remake::KeyVariant kv{prog.key, prog.variant};
++    {
++        std::lock_guard rk(module_remake::mu);
++        const auto it = module_remake::dropped.find(kv);
++        if (it == module_remake::dropped.end() || it->second.program != &prog) return true;
++        if (it->second.failed) return false;
++    }
++    const auto skipped = [&](const Stage& st) {   // (a fallback program's compute stages: not in its graphics pipeline)
++        return prog.fallback && (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT));
++    };
++    const size_t head_size = disk_zstd ? kZstdHead : 16;
++    // (read with the worker's own handle on the file, and the modules made before taking light_mu: neither light_mu nor disk_mu is
++    // held across the disk reads or vkCreateShaderModule, so a dispatch or pick on the replay thread never waits behind them)
++    FILE* own_in = !disk_path.empty() ? fopen(disk_path.c_str(), "rb") : nullptr;
++    auto read_at = [&](int64_t pos, void* dst, size_t bytes) -> bool {
++        if (own_in) return _fseeki64(own_in, pos, SEEK_SET) == 0 && fread(dst, 1, bytes, own_in) == bytes;
++        std::lock_guard dk(disk_mu);
++        return disk_in && _fseeki64(disk_in, pos, SEEK_SET) == 0 && fread(dst, 1, bytes, disk_in) == bytes;
++    };
++    // (each stage's record head is checked before its code is read: a stale place is a failure, not another program's code)
++    int64_t checked_at = -1;
++    bool ok = true;
++    std::vector<VkShaderModule> made(prog.stages.size(), VK_NULL_HANDLE);
++    for (size_t i = 0; ok && i < prog.stages.size(); i++) {
++        const Stage& st = prog.stages[i];
++        if (skipped(st) || !st.code_words) continue;
++        if (st.record_at != checked_at) {
++            uint64_t head[2]{};
++            ok = st.record_size && st.record_at >= (int64_t)head_size &&
++                 read_at(st.record_at - (int64_t)head_size, head, 16) && head[0] == prog.key && head[1] == st.record_size;
++            checked_at = st.record_at;
++        }
++        std::vector<uint32_t> spirv((size_t)st.code_words);
++        ok = ok && read_at(st.code_at, spirv.data(), spirv.size() * 4);
++        if (ok) made[i] = make_module(spirv, prog.key, nullptr);
++        if (!made[i]) {
++            ok = false;
++            static std::atomic<int> logged{0};
++            if (logged++ < 20)
++                logf("vk: program cache: the code of program %016llx at %lld did not read or made no module: left out",
++                     (unsigned long long)prog.key, (long long)st.code_at);
++        }
++    }
++    if (own_in) fclose(own_in);
++    const auto destroy_made = [&] {
++        for (VkShaderModule m : made)
++            if (m) vkDestroyShaderModule(dev.device, m, nullptr);
++    };
++    std::lock_guard lk(light_mu);
++    std::lock_guard rk(module_remake::mu);
++    const auto it = module_remake::dropped.find(kv);
++    if (it == module_remake::dropped.end() || it->second.program != &prog) {   // (another worker made them first)
++        destroy_made();
++        return true;
++    }
++    if (!ok) {
++        destroy_made();
++        it->second.failed = true;
++        return false;
++    }
++    Program& p = const_cast<Program&>(prog);
++    for (size_t i = 0; i < p.stages.size(); i++) {
++        if (!made[i]) continue;
++        if (!p.stages[i].module) p.stages[i].module = made[i];
++        else vkDestroyShaderModule(dev.device, made[i], nullptr);
++    }
++    module_remake::dropped.erase(it);
++    return true;
++}
++
++size_t program_cache_drop_modules() {
++    std::lock_guard sk(shader_mu);
++    std::lock_guard lk(light_mu);
++    std::lock_guard rk(module_remake::mu);
++    // (before the first module goes: a pipeline build from here on asks the table, and waits on mu until this walk is done)
++    module_remake::any.store(true, std::memory_order_release);
++    size_t dropped = 0;
++    for (auto& kv : programs) {
++        for (auto& p : kv.second) {
++            if (!p || !p->ready.load(std::memory_order_acquire) || p->failed) continue;
++            if (p->compute) {
++                if ((p->compute_pipeline != VK_NULL_HANDLE || p->compute_state.load(std::memory_order_acquire) == 2) &&
++                    !p->stages.empty() && p->stages[0].module) {
++                    vkDestroyShaderModule(dev.device, p->stages[0].module, nullptr);
++                    p->stages[0].module = VK_NULL_HANDLE;
++                    dropped++;
++                }
++                continue;
++            }
++            if (p->fallback && p->compute_state.load(std::memory_order_acquire) == 2) {
++                for (Stage& st : p->stages) {
++                    if (st.module && st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT) {
++                        vkDestroyShaderModule(dev.device, st.module, nullptr);
++                        st.module = VK_NULL_HANDLE;
++                        dropped++;
++                    }
++                }
++            }
++            // (for an un-noted program or variant, or when no graphics pipeline was built before the title: keep its vertex and
++            // fragment modules so its first draw in play builds from memory without a disk read)
++            const module_remake::KeyVariant key_variant{p->key, p->variant};
++            if (!module_remake::built.count(key_variant)) continue;
++            // (one program let go by key and variant: another of the same ones in memory keeps its modules)
++            if (const auto it = module_remake::dropped.find(key_variant);
++                it != module_remake::dropped.end() && it->second.program != p.get())
++                continue;
++            bool can_drop = true;
++            for (const Stage& st : p->stages) {
++                if (!st.module) continue;
++                if (p->fallback && (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)))
++                    continue;
++                if (!st.code_words || !st.record_size) { can_drop = false; break; }
++            }
++            if (!can_drop) continue;
++            bool any_gfx = false;
++            for (Stage& st : p->stages) {
++                if (p->fallback && (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)))
++                    continue;
++                if (st.module) {
++                    vkDestroyShaderModule(dev.device, st.module, nullptr);
++                    st.module = VK_NULL_HANDLE;
++                    dropped++;
++                    any_gfx = true;
++                }
++            }
++            if (any_gfx) module_remake::dropped[key_variant] = module_remake::Dropped{p.get(), false};
++        }
++    }
++    return dropped;
++}
++
+ /// (longshot, the prepare's driver part: vk_draw.cpp warm_libraries) the key of every kept graphics and mesh program, whoever made
+ /// it (the seed, a state list, play), in the file's order, from the list of records alone: program_cache_each reads every record
+ /// for its list, the whole file (6.7 GB with every program of the game). *loaded: the variants read in already, whose records
+diff --git a/gpu/vk/vk_replay.cpp b/gpu/vk/vk_replay.cpp
+index e5e2e055..27b56976 100644
+--- a/gpu/vk/vk_replay.cpp
++++ b/gpu/vk/vk_replay.cpp
+@@ -3189,7 +3189,17 @@ void invalidate(uint64_t gpu, uint64_t size) {
+     if (size) {
+         static const bool off = env_on("RX_VK_NO_READBACK_WAIT");
+         bool ever = false;
+-        if (!off && (memory_writeback_value(host->gpu_guest(gpu), size, &ever), ever)) {
++        // (Deckport: RX_VK_READBACK_ONLY / RX_VK_READBACK_SKIP, lists of sizes: wait only for, or for all but, those readbacks.
++        // The Deck's frame lost ~25% to the waits; OoT's exposure meter needs its wait, the culling ranges do not)
++        static const std::vector<uint64_t> rb_only = [] { std::vector<uint64_t> v; if (const char* e = getenv("RX_VK_READBACK_ONLY"))
++            for (const char* q = e; *q;) { char* end; const uint64_t x = strtoull(q, &end, 0); if (end == q) break; v.push_back(x); q = *end ? end + 1 : end; }
++            return v; }();
++        static const std::vector<uint64_t> rb_skip = [] { std::vector<uint64_t> v; if (const char* e = getenv("RX_VK_READBACK_SKIP"))
++            for (const char* q = e; *q;) { char* end; const uint64_t x = strtoull(q, &end, 0); if (end == q) break; v.push_back(x); q = *end ? end + 1 : end; }
++            return v; }();
++        const bool rb_sel = (!rb_only.empty() && std::find(rb_only.begin(), rb_only.end(), (uint64_t)size) == rb_only.end()) ||
++                            std::find(rb_skip.begin(), rb_skip.end(), (uint64_t)size) != rb_skip.end();
++        if (!off && !rb_sel && (memory_writeback_value(host->gpu_guest(gpu), size, &ever), ever)) {
+             memory_note_readback(host->gpu_guest(gpu), size);   // (PR 430: the CPU may write it back: memory_rb_refresh)
+             static std::atomic<int64_t> calls{0}, waited{0}, ns{0};
+             const auto w0 = std::chrono::steady_clock::now();
+@@ -3450,6 +3460,106 @@ bool made_shot_init() {
+     return true;
+ }
+ 
++// (Deckport) RX_VK_AFLASH=1: flashes counted without waiting for the GPU (patches/patch_aflash.py)
++constexpr uint32_t kAfW = 64, kAfH = 36, kAfRing = 8;
++VkImage af_image = VK_NULL_HANDLE;
++VmaAllocation af_image_alloc = nullptr;
++VkBuffer af_bufs[kAfRing] = {};
++VmaAllocation af_allocs[kAfRing] = {};
++void* af_maps[kAfRing] = {};
++uint64_t af_values[kAfRing] = {};
++int64_t af_presents[kAfRing] = {};
++bool aflash_on() {
++    static const bool on = getenv("RX_VK_AFLASH") && atoi(getenv("RX_VK_AFLASH")) != 0;
++    return on;
++}
++bool aflash_init();
++void aflash_read(uint64_t done);
++
++bool aflash_init() {
++    if (af_image) return true;
++    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
++    ci.imageType = VK_IMAGE_TYPE_2D;
++    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
++    ci.extent = {kAfW, kAfH, 1};
++    ci.mipLevels = ci.arrayLayers = 1;
++    ci.samples = VK_SAMPLE_COUNT_1_BIT;
++    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++    if (!create_image(ci, af_image, af_image_alloc)) return false;
++    for (uint32_t i = 0; i < kAfRing; i++)
++        if (!create_buffer((uint64_t)kAfW * kAfH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, af_bufs[i], af_allocs[i], &af_maps[i]))
++            return false;
++    logf("vk: RX_VK_AFLASH: flashes counted from a 64x36 copy of each present, read once the GPU is past it (no wait)");
++    return true;
++}
++void aflash_read(uint64_t done) {
++    // (the finished slots in present order; a gap (a slot still busy when its turn came) starts the run again)
++    static std::vector<uint8_t> fa, fb;
++    static int64_t pa = -2, pb = -2;
++    static int64_t frames = 0, flashes = 0, flashes_total = 0, up_total = 0;
++    for (;;) {
++        int pick = -1;
++        for (uint32_t i = 0; i < kAfRing; i++)
++            if (af_values[i] && af_values[i] <= done && (pick < 0 || af_presents[i] < af_presents[pick])) pick = (int)i;
++        if (pick < 0) return;
++        const uint8_t* m = (const uint8_t*)af_maps[pick];
++        std::vector<uint8_t> fc(m, m + (size_t)kAfW * kAfH * 4);
++        const int64_t pc = af_presents[pick];
++        af_values[pick] = 0;
++        frames++;
++        if (pb == pc - 1 && pa == pc - 2) {
++            int hits = 0, up = 0;
++            static std::vector<uint8_t> af_mask;   // (Deckport: RX_VK_AFLASH_DUMP)
++            af_mask.assign((size_t)kAfW * kAfH, 0);
++            for (uint32_t i = 0; i < kAfW * kAfH; i++) {
++                int dab = 0, dbc = 0, dac = 0;
++                for (int ch = 0; ch < 3; ch++) {
++                    const int a = fa[i * 4 + ch], b = fb[i * 4 + ch], c = fc[i * 4 + ch];
++                    dab = std::max(dab, std::abs(a - b)), dbc = std::max(dbc, std::abs(b - c)), dac = std::max(dac, std::abs(a - c));
++                }
++                if (dab > 48 && dbc > 48 && dac < 16) hits++, up += fb[i * 4 + 1] > fa[i * 4 + 1], af_mask[i] = 255;
++            }
++            if (hits >= 40) {
++                flashes++, flashes_total++, up_total += up * 2 > hits;
++                {   // (Deckport) RX_VK_AFLASH_DUMP=<dir>: the three frames side by side and the cells that fired, as a PPM
++                    static const char* dir = getenv("RX_VK_AFLASH_DUMP");
++                    static int dumped = 0;
++                    if (dir && dumped < 160 && (flashes_total <= 40 || flashes_total % 8 == 0)) {
++                        char path[512];
++                        snprintf(path, sizeof path, "%s/af_%08lld.ppm", dir, (long long)pb);
++                        if (FILE* f = fopen(path, "wb")) {
++                            fprintf(f, "P6\n%u %u\n255\n", kAfW * 3, kAfH * 2);
++                            const std::vector<uint8_t>* fr[3] = {&fa, &fb, &fc};
++                            for (uint32_t y = 0; y < kAfH; y++)
++                                for (int k = 0; k < 3; k++)
++                                    for (uint32_t x = 0; x < kAfW; x++) fwrite(fr[k]->data() + ((size_t)y * kAfW + x) * 4, 1, 3, f);
++                            for (uint32_t y = 0; y < kAfH; y++)
++                                for (int k = 0; k < 3; k++)
++                                    for (uint32_t x = 0; x < kAfW; x++) {
++                                        const uint8_t v = k == 1 ? af_mask[(size_t)y * kAfW + x] : 0;
++                                        const uint8_t px[3] = {v, v, v};
++                                        fwrite(px, 1, 3, f);
++                                    }
++                            fclose(f);
++                            dumped++;
++                        }
++                    }
++                }
++                static int told = 0;
++                if (told++ < 200)
++                    logf("vk: aflash at present %lld: %d of %u cells, %s", (long long)pb, hits, kAfW * kAfH,
++                         up * 2 > hits ? "brighter" : "darker");
++            }
++        }
++        pa = pb, fa.swap(fb);
++        pb = pc, fb = std::move(fc);
++        if (frames % 600 == 0) {
++            logf("vk: aflash: %lld flashes in the last 600 frames read (%lld in all, %lld brighter; %.1f per 1000)", (long long)flashes,
++                 (long long)flashes_total, (long long)up_total, flashes_total * 1000.0 / frames);
++            flashes = 0;
++        }
++    }
++}
+ bool offscreen_init() {
+     if (!shot_dimensions_ready()) return false;
+     if (off_image) return true;
+@@ -3573,6 +3683,14 @@ uint32_t crc32(const uint8_t* p, size_t n, uint32_t c = 0xFFFFFFFFu) {
+ }
+ } // namespace
+ 
++// (vk_internal.h) One part of a submission done on the GPU: the late pages' fix reads a page of the capture whose fix an earlier
++// part of this submission recorded (vk_memory.cpp, late_fix_cpu_read), after that part's fix has run
++int vk_part_wait(uint64_t part, uint64_t timeout_ns) {
++    int ok = 0;
++    if (!wait_recorded_part(part, timeout_ns, &ok)) return -1;
++    return ok ? 1 : 0;
++}
++
+ // Called while replaying, including workers joined before the next signal is issued.
+ // The current logical value may already have completed before a stopped queue resumes.
+ // A new signal instead follows every recording using the images being retired, including
+@@ -4208,6 +4326,18 @@ void do_present(const nvn_tex* t, const int crop[4]) {
+         }
+         ts_anchor_ns = host->ticks() * 32;
+         dump_present(presents);
++        if (aflash_on()) {   // (Deckport: RX_VK_AFLASH)
++            aflash_read(vk_timeline_completed());
++            const uint32_t slot = (uint32_t)(presents % kAfRing);
++            if (src && !af_values[slot] && aflash_init()) {
++                image_barrier(r.cmd, af_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
++                blit_crop(r.cmd, src, sw, sh, crop, af_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kAfW, kAfH);
++                image_barrier(r.cmd, af_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++                const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kAfW, kAfH, 1}};
++                vkCmdCopyImageToBuffer(r.cmd, af_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, af_bufs[slot], 1, &c);
++                af_values[slot] = value, af_presents[slot] = presents;
++            }
++        }
+         if (src && (dev.offscreen || shots) && offscreen_init()) {
+             if (dev.offscreen) {
+                 image_barrier(r.cmd, off_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+@@ -4292,13 +4422,14 @@ void do_present(const nvn_tex* t, const int crop[4]) {
+                 const long count = e ? std::strtol(e, nullptr, 10) : 0;
+                 constexpr long capacity = sizeof(values) / sizeof(values[0]);
+                 if (count > capacity) logf("vk: RX_VK_WAIT_GPU=%ld exceeds the ring capacity; using %ld", count, capacity);
+-                return (int)std::clamp<long>(count, 0, capacity);
++                return (int)std::clamp<long>(count, -1, capacity);   // (Deckport: -1 kept, the frame itself; v2.0.12 clamped it to 0)
+             }();
+             if (ahead > 0) {
+                 const uint64_t old = values[presents % ahead];
+                 values[presents % ahead] = value;
+                 if (old) wait_value(old);
+             }
++            else if (ahead < 0) wait_value(value);   // (Deckport: -1, o próprio quadro, issue #1186)
+         }
+         if (presents % 300 == 0) pipeline_cache_save(false);
+         {   // (RX_VK_DUMP_KEY: F9 dumps the next frame, 8 times at most)
+diff --git a/gpu/vk/vk_shader.cpp b/gpu/vk/vk_shader.cpp
+index 7a219c4e..9ce9a055 100644
+--- a/gpu/vk/vk_shader.cpp
++++ b/gpu/vk/vk_shader.cpp
+@@ -211,16 +211,22 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
+     using Shader::Ampere::Instruction;
+     std::vector<Instruction> native;
+     Shader::Ampere::ProgramCaptureState capture;
++    // (longshot) A word the capture reads as a branch that would leave every program (to before its start, between two
++    // instructions, or past the largest program, 16 MiB: program_address_map.h) is no instruction of this one. The
++    // capture's end rules are narrower than the lowering's (a loop left only by predicated EXITs, a library function that
++    // ends the shader), so it can read on past the program's end into what follows it there. The program ends before
++    // that word: the lowering, which takes a program only to its own end with every branch inside it (an indirect one's
++    // targets when it translates), says whether it does, and only if it does not is the program refused, naming the word
++    // as before.
++    uint32_t outside = ~0u;   // (that word's instruction number)
+     for (uint32_t i = 0; hdr + (i + 1) * sizeof(Instruction) <= len; i++) {
+         Instruction& insn = native.emplace_back();
+         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
+         const auto r = capture.Observe(insn, i);
+         if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+-            char why[96];
+-            snprintf(why, sizeof why, "the branch at instruction %u (+%#x) goes outside the program", i,
+-                     (unsigned)(i * sizeof(Instruction)));
+-            c.why = why;
+-            return c;
++            native.pop_back();
++            outside = i;
++            break;
+         }
+         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
+     }
+@@ -323,11 +329,25 @@ Code parse_code(const uint8_t* ctl, const std::vector<uint8_t>& area) {
+                 }
+             }
+         }
+-        char why[160];
+-        snprintf(why, sizeof why, "does not lower at +%#x: %s", lowered.error_offset, std::string(lowered.error).c_str());
++        char why[256];
++        if (outside != ~0u)   // (the code before the word the capture stopped at does not lower: refused for that word, as before)
++            snprintf(why, sizeof why, "the branch at instruction %u (+%#x) goes outside the program (%#x code bytes), and the "
++                     "code before it does not lower at +%#x: %s", outside, (unsigned)(outside * sizeof(Instruction)),
++                     len - hdr, lowered.error_offset, std::string(lowered.error).c_str());
++        else
++            snprintf(why, sizeof why, "does not lower at +%#x: %s", lowered.error_offset, std::string(lowered.error).c_str());
+         c.why = why;
+         return c;
+     }
++    if (outside != ~0u) {   // (longshot: each program once, up to 64: it ended before the word the capture stopped at)
++        static std::mutex mu;
++        static std::unordered_set<uint64_t> seen;
++        std::lock_guard lk(mu);
++        if (seen.size() < 64 && seen.insert(c.key).second)
++            logf("vk: NVN2 program %016llx (stage %u) ends at +%#x, before the word at +%#x that would branch outside it "
++                 "(%#x code bytes)", (unsigned long long)c.key, st, lowered.source_size,
++                 (unsigned)(outside * sizeof(Instruction)), len - hdr);
++    }
+     c.texture_bound = lowered.required_texture_buffer;
+     c.code.assign(sizeof(Shader::ProgramHeader) / 8, 0);
+     if (graphics) std::memcpy(c.code.data(), area.data(), sizeof(Shader::ProgramHeader));
+@@ -1171,7 +1191,8 @@ void dump_ir(const Program& p, const char* stage, const Shader::IR::Program& pro
+ // Deck plays with RX_VK_MESH_NOCULL=2c56dc1006942f74 (issue 817). A name under RX_VK_MESH, so the program cache starts
+ // again when it changes.
+ bool mesh_nocull_wanted(uint64_t code_key) {
+-    static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "";
++    // (Deckport: on by default for the Steam Deck cull task, issue 817; RX_VK_MESH_NOCULL=0 turns it off)
++    static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "2c56dc1006942f74";
+     if (list.empty() || list == "0") return false;
+     char hex[24];
+     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)code_key);
+@@ -1222,7 +1243,37 @@ void mesh_nocull(Shader::IR::Program& program, uint64_t code_key) {
+             inst.ReplaceUsesWith(Value{true});
+             made++;
+         }
++    int grid = 0;   // (Deckport, patches/patch_nocull_grid.py: a grade de uma célula só, o laço roda uma vez)
++    static const bool grid_on = !getenv("RX_VK_MESH_NOCULL_GRID") || atoi(getenv("RX_VK_MESH_NOCULL_GRID")) != 0;
++    if (made && grid_on)
++        for (Block* block : program.blocks)
++            for (Inst& inst : block->Instructions()) {
++                const Opcode op = inst.GetOpcode();
++                // (o shader lê largura e altura juntas, GetCbufU32x2 #3, #3088, e tira cada uma com CompositeExtractU32x2:
++                // o limite do laço é min(..., largura - 1). Com 1, o laço roda uma vez)
++                if (op == Opcode::CompositeExtractU32x2) {
++                    const Value src = inst.Arg(0).Resolve();
++                    if (src.IsImmediate()) continue;
++                    const Inst* c = src.InstRecursive();
++                    if (c->GetOpcode() != Opcode::GetCbufU32x2) continue;
++                    const Value bank = c->Arg(0).Resolve(), off = c->Arg(1).Resolve();
++                    if (!bank.IsImmediate() || !off.IsImmediate() || bank.U32() != 3 || off.U32() != 3088) continue;
++                    inst.ReplaceUsesWith(Value{1u});
++                    grid++;
++                    continue;
++                }
++                if (op != Opcode::GetCbufU32 && op != Opcode::GetCbufF32) continue;
++                const Value bank = inst.Arg(0).Resolve(), off = inst.Arg(1).Resolve();
++                if (!bank.IsImmediate() || !off.IsImmediate() || bank.U32() != 3) continue;
++                if (off.U32() != 3088 && off.U32() != 3092) continue;
++                inst.ReplaceUsesWith(op == Opcode::GetCbufF32 ? Value{1.0f} : Value{1u});
++                grid++;
++            }
+     if (made) Shader::Optimization::DeadCodeEliminationPass(program);
++    if (grid) {
++        static std::atomic<int> told_grid{0};
++        if (told_grid++ < 8) logf("vk: task code %016llx: grid read %d times, made 1x1 (RX_VK_MESH_NOCULL_GRID)", (unsigned long long)code_key, grid);
++    }
+     static std::atomic<int> told{0};
+     if (told++ < 8)
+         logf("vk: task code %016llx: culling %s (RX_VK_MESH_NOCULL)", (unsigned long long)code_key,
+@@ -1243,6 +1294,7 @@ uint64_t translator_stamp() {
+     // lost it)
+     const uint64_t translator = LONGSHOT_SHADER_STAMP;
+     add(&translator, sizeof translator);
++    if (!getenv("RX_VK_MESH_NOCULL_GRID") || atoi(getenv("RX_VK_MESH_NOCULL_GRID")) != 0) add("deckport-grid-2", 15);   // (patch_nocull_grid.py)
+     const uint32_t depth = host->depth_minus_w() != 0;   // (d3zessete's PR 54: programs made in either depth mode are kept apart)
+     add(&depth, sizeof depth);
+     // (and a GPU's mesh shaders: a file of native task and mesh programs is no use to the compute fallback, nor its to one)
+diff --git a/gpu/vk/vk_shader.h b/gpu/vk/vk_shader.h
+index cffbae87..ab28fe19 100644
+--- a/gpu/vk/vk_shader.h
++++ b/gpu/vk/vk_shader.h
+@@ -27,6 +27,15 @@ struct Stage {
+     // program cache (vk_progcache.cpp), which every translated program passes. Not in vk_shader.cpp, whose bytes are part of
+     // the translator's stamp: a change there translates every player's programs again
+     mutable uint32_t phis = 0;
++    // (longshot) where its SPIR-V is in longshot_programs.bin, and how many words (0: compressed or translated in this run, so
++    // its module stays): once precompile_run has built its pipelines, its module can be let go on Linux and made again from the
++    // file if play ever builds a new pipeline state variant for this program
++    int64_t code_at = 0;
++    uint64_t code_words = 0;
++    // (longshot) the record it was read from (its payload's position and stored size): its head is checked before code_at is read
++    // again (program_cache_complete_graphics). Here and not in Program, whose size is part of the translator's stamp
++    int64_t record_at = 0;
++    uint64_t record_size = 0;
+ };
+ 
+ /// A texture handle the stage reads from a storage buffer: its handle program (Shader::Info::handle_programs, Eden's
+@@ -142,6 +151,18 @@ bool program_cache_complete(Program& p);
+ /// (longshot) The same without waiting for Intel's compiler gate on Windows (IntelDriverGate): while another thread holds it,
+ /// *busy is set, false comes back and the program is left as it was, its code still to read (a worker completes it)
+ bool program_cache_complete_ask(Program& p, bool* busy);
++/// (longshot) The graphics stages of a program whose modules were let go after the precompile (program_cache_drop_modules):
++/// remade from longshot_programs.bin before play builds a new pipeline variant for it
++bool program_cache_complete_graphics(const Program& p);
++/// (longshot) Lets go of the VkShaderModules of ready programs whose pipelines are built and whose stages can be remade from
++/// longshot_programs.bin (or are compute stages that need no another pipeline); returns how many modules were destroyed
++size_t program_cache_drop_modules();
++/// (longshot) precompile_run built p's noted graphics pipelines before the title: program_cache_drop_modules may let its graphics
++/// modules go (an un-noted program or variant keeps them for its first draw in play)
++void program_cache_note_built(const Program& p);
++/// (longshot) p's graphics modules were let go (program_cache_drop_modules) and not made again yet: no pipeline is built from it
++/// until program_cache_complete_graphics has made them
++bool program_modules_dropped(const Program& p);
+ /// (longshot) Every kept graphics and mesh program's key, in the file's order, no record read; *loaded: the variants in memory already
+ std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded);
+ const Program* program_find(uint64_t key, uint64_t variant);
+diff --git a/gpu/vk/vk_texture.cpp b/gpu/vk/vk_texture.cpp
+index b473fdf5..67c70bfd 100644
+--- a/gpu/vk/vk_texture.cpp
++++ b/gpu/vk/vk_texture.cpp
+@@ -54,6 +54,8 @@
+ #include "astc_bc_policy.h"
+ #include "drawn_writeback.h"
+ #include "vram_compact.h"
++#include "commit_room.h"
++#include "linux_pressure.h"
+ #include "evict_reason.h"
+ #include "keep_rendered.h"
+ #include "target_overlap.h"
+@@ -299,20 +301,68 @@ static uint64_t commit_reserve() {
+                                                                 : 2560ull << 20;
+     return v;
+ }
++#if defined(_WIN32)
++// (what Windows' page files can still grow by: commit_room.h. NtQuerySystemInformation's SystemPageFileInformationEx gives each
++// file's size and its maximum, which for a file Windows manages is the one Windows chose; read again after a second. 0 where it
++// cannot be read: then the room is what is left under the limit now, as before)
++static uint64_t page_file_growth() {
++    static uint64_t value;
++    static ULONGLONG at;
++    const ULONGLONG now = GetTickCount64();
++    if (at && now - at < 1000) return value;
++    at = now ? now : 1, value = 0;
++    using Query = LONG(WINAPI*)(int, void*, ULONG, ULONG*);
++    static const Query query = (Query)(void*)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
++    alignas(16) static unsigned char buf[16384];   // (a record is 40 bytes and its name; Windows has at most 16 page files)
++    ULONG len = 0;
++    if (!query || query(0x90, buf, sizeof buf, &len) < 0 || len > sizeof buf) return 0;
++    SYSTEM_INFO si{};
++    GetSystemInfo(&si);
++    commit_room::PageFile files[16];
++    const size_t n = commit_room::page_files(buf, len, si.dwPageSize, files, 16);
++    value = commit_room::growth(files, n, [](char drive) -> uint64_t {
++        const wchar_t root[] = {(wchar_t)drive, L':', L'\\', 0};
++        ULARGE_INTEGER free_bytes{};
++        return GetDiskFreeSpaceExW(root, nullptr, nullptr, &free_bytes) ? free_bytes.QuadPart : 0;
++    });
++    return value;
++}
++#endif
+ // (what Windows lets the process commit before its limit, RAM plus the page file: GlobalMemoryStatusEx's ullAvailPageFile, the
+-// limit less the whole system's commit. false where it cannot be read)
++// limit as it is now less the whole system's commit, and below the reserve what the page files can still grow by: a page file
++// Windows manages grows as the commit nears the limit, and the limit with it. RX_VK_COMMIT_GROWTH=0: the limit as it is now
++// alone, as before. false where it cannot be read)
+ static bool commit_headroom(uint64_t* free_bytes) {
+ #if defined(_WIN32)
+     MEMORYSTATUSEX m{};
+     m.dwLength = sizeof m;
+     if (!GlobalMemoryStatusEx(&m)) return false;
+-    *free_bytes = m.ullAvailPageFile;
++    static const bool counted = !getenv("RX_VK_COMMIT_GROWTH") || atoi(getenv("RX_VK_COMMIT_GROWTH")) != 0;
++    uint64_t grow = 0;
++    if (commit_room::wants_growth(m.ullAvailPageFile, commit_reserve(), counted)) {
++        grow = page_file_growth();
++        static uint64_t said_at;
++        if (grow && (!said_at || frame_no - said_at >= 3600)) {
++            said_at = frame_no;
++            logf("vk: commit: %llu MB left under Windows' limit as it is now, and the page files can grow by %llu MB more: counted "
++                 "as room (RX_VK_COMMIT_GROWTH=0: not counted)", (unsigned long long)(m.ullAvailPageFile >> 20),
++                 (unsigned long long)(grow >> 20));
++        }
++    }
++    *free_bytes = commit_room::headroom(m.ullAvailPageFile, grow);
+     return true;
+ #else
+     (void)free_bytes;
+     return false;
+ #endif
+ }
++static uint64_t linux_avail_reserve() {
++    static const uint64_t v = linux_pressure::avail_reserve(getenv("RX_VK_AVAIL_RESERVE_MB"));
++    return v;
++}
++static bool linux_pressed = false;
++static bool linux_entered_pressure = false;
++static std::atomic<uint64_t> linux_shortfall_bytes{0}, linux_shortfall_seq{0};
+ uint64_t pool_cap() {
+     static const uint64_t mb = getenv("RX_VK_TARGET_POOL_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_TARGET_POOL_MB"))) : 256;
+     return mb << 20;
+@@ -1556,6 +1606,50 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+     if (tex.astc && (up_route = UP_ASTC, upload_astc_gpu(tex, total, dirty))) return true;
+     up_route = UP_CPU;
+     if (tex.bc) return false;   // (no CPU path into BC3)
++    if (tex.shrink) {   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape: cleared once, never uploaded)
++        if (!tex.uploaded) {
++            VkCommandBuffer cmd = upload_cmd();
++            full_barrier(cmd);
++            const VkClearDepthStencilValue z{0.0f, 0};
++            const VkImageSubresourceRange r{VK_IMAGE_ASPECT_DEPTH_BIT, 0, tex.levels, 0, tex.layers};
++            vkCmdClearDepthStencilImage(cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r);
++            full_barrier(cmd);
++        }
++        return up_route = UP_GPU, true;
++    }
++    {   // (Deckport, patches/patch_depthzero.py) a new big depth target still all zero: cleared on the GPU, not unswizzled on
++        // the CPU (the 12288x12288 shadow target as the castle loads: 3.5 s on the Deck)
++        static const bool on = !getenv("RX_VK_DEPTH_ZERO") || atoi(getenv("RX_VK_DEPTH_ZERO")) != 0;
++        if (on && !dirty && !tex.uploaded && is_depth_format(tex.format) && !(tex.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
++            total >= (16u << 20) && !(tex.gpu < (1ull << 40) && memory_has_shadow(tex.gpu, total))) {
++            bool zero = true;
++            std::vector<uint8_t> part;
++            for (uint64_t at = 0; at < total && zero; at += (1u << 20)) {
++                const uint64_t n = std::min<uint64_t>(1u << 20, total - at);
++                uint64_t avail = 0;
++                const uint8_t* d = host->gpu_ptr(tex.gpu + at, &avail);
++                if (!d || avail < n) part.assign(n, 1), host->gpu_read(tex.gpu + at, part.data(), n), d = part.data();
++                const uint64_t* w = (const uint64_t*)d;
++                for (uint64_t i = 0; i < n / 8; i++)
++                    if (w[i]) { zero = false; break; }
++                for (uint64_t i = n / 8 * 8; zero && i < n; i++)
++                    if (d[i]) zero = false;
++            }
++            if (zero) {
++                VkCommandBuffer cmd = upload_cmd();
++                full_barrier(cmd);
++                const VkClearDepthStencilValue z{0.0f, 0};
++                const VkImageSubresourceRange r{VK_IMAGE_ASPECT_DEPTH_BIT, 0, tex.levels, 0, tex.layers};
++                vkCmdClearDepthStencilImage(cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r);
++                full_barrier(cmd);
++                static int told;
++                if (told++ < 20)
++                    logf("vk: depth target #%u %ux%u NVN %#x (%llu MB) all zero: cleared on the GPU, not uploaded (RX_VK_DEPTH_ZERO)",
++                         tex.id, tex.width, tex.height, tex.nvn_format, (unsigned long long)(total >> 20));
++                return up_route = UP_GPU, true;
++            }
++        }
++    }
+     // (the GPU's unswizzle reads guest memory as it is: not where the capture kept the storage as it was at its submit)
+     if (!(tex.gpu < (1ull << 40) && memory_has_shadow(tex.gpu, total)) && upload_unswizzle_gpu(tex, total, dirty))
+         return up_route = UP_GPU, true;
+@@ -2166,6 +2260,18 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
+         flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+         if (dev.view_2d_of_3d) flags |= VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
+     }
++    {   // (Deckport, patches/patch_shadowdiv.py: the 12288 x 12288 shadow map made smaller)
++        static const uint32_t sdiv = getenv("RX_VK_SHADOW_DIV") ? (uint32_t)std::max(1, atoi(getenv("RX_VK_SHADOW_DIV"))) : 2u;
++        if (sdiv > 1 && is_depth_format(x.format) && !(x.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
++            x.type == VK_IMAGE_TYPE_2D && x.levels == 1 && x.layers == 1 && x.samples == VK_SAMPLE_COUNT_1_BIT &&
++            !x.sparse && x.width >= 8192 && x.height >= 8192) {
++            static int told;
++            if (told++ < 8)
++                logf("vk: depth target %ux%u made %ux%u (RX_VK_SHADOW_DIV=%u: its passes' viewport and scissor divided)", x.width,
++                     x.height, x.width / sdiv, x.height / sdiv, sdiv);
++            x.width /= sdiv, x.height /= sdiv, x.shrink = sdiv;
++        }
++    }
+     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+     ci.flags = flags;
+     ci.imageType = x.type;
+@@ -3145,6 +3251,7 @@ bool flush_uncached() {
+ bool flush_record(Flush& f, VkCommandBuffer cmd = VK_NULL_HANDLE) {
+     if (!cmd) cmd = rb_cmd;
+     Texture& t = *f.t;
++    if (t.shrink) return f.ok = false;   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape)
+     const uint32_t layers = t.type == VK_IMAGE_TYPE_3D ? 1 : t.layers;
+     for (uint32_t level = 0; level < t.levels; level++) {
+         const LevelGeo g = level_geo(t, level);
+@@ -4132,6 +4239,10 @@ Texture* texture_for_present(const nvn_tex* t) {
+ 
+ int64_t texture_readback_wait_ns() { return st_readback_wait_ns.load(std::memory_order_relaxed); }
+ int64_t texture_frame_ns() { return st_texture_frame_ns.load(std::memory_order_relaxed); }
++uint64_t linux_pressure_shortfall(uint64_t* seq) {
++    if (seq) *seq = linux_shortfall_seq.load(std::memory_order_acquire);
++    return linux_shortfall_bytes.load(std::memory_order_acquire);
++}
+ 
+ void texture_frame(uint64_t completed) {
+     const TraceTimer timed{st_texture_frame_ns};   // (longshot: the frame trace's tex_frame_ms)
+@@ -4162,11 +4273,13 @@ void texture_frame(uint64_t completed) {
+         uint64_t kept = 0;
+         for (auto it = arenas.begin(); it != arenas.end();) {
+             const bool idle = it->value <= completed && it->value != rec_value;
+-            // (and one nothing has staged into for 30 s: Kokiri Forest's gameplay stages next to nothing, and the 64 MB it kept are VRAM
+-            // behind the BAR. A load makes one again. RX_VK_STAGING_IDLE_S=<n>: that long, 0: kept)
++            // (and one nothing has staged into for 30 s, or 5 s while Linux memory pressure is on: Kokiri Forest's gameplay stages
++            // next to nothing, and the 64 MB it kept are VRAM behind the BAR. A load makes one again. RX_VK_STAGING_IDLE_S=<n>:
++            // that long, 0: kept)
+             static const int64_t idle_s = getenv("RX_VK_STAGING_IDLE_S") ? atoll(getenv("RX_VK_STAGING_IDLE_S")) : 30;
+-            const bool stale = idle_s && std::chrono::steady_clock::now() - it->used_at > std::chrono::seconds(idle_s);
+-            if (idle && (it->size > kArena || kept + it->size > keep || stale)) {
++            const int64_t wait_s = linux_pressed && idle_s > 5 ? 5 : idle_s;
++            const bool stale = wait_s && std::chrono::steady_clock::now() - it->used_at > std::chrono::seconds(wait_s);
++            if (idle && (it->size > kArena || kept + it->size > keep || stale || linux_entered_pressure)) {
+                 destroy_buffer(it->buffer, it->allocation);
+                 it = arenas.erase(it);
+                 continue;
+@@ -4174,6 +4287,7 @@ void texture_frame(uint64_t completed) {
+             kept += it->size;
+             ++it;
+         }
++        linux_entered_pressure = false;
+         if (frame_no % 600 == 0) {   // (the process's memory now and then: what the host side holds)
+             PROCESS_MEMORY_COUNTERS_EX pm{};
+             pm.cb = sizeof pm;
+@@ -4181,38 +4295,59 @@ void texture_frame(uint64_t completed) {
+                 logf("vk: memory: working set %llu MB (peak %llu), private %llu MB, staging %llu MB in %zu arenas",
+                      (unsigned long long)(pm.WorkingSetSize >> 20), (unsigned long long)(pm.PeakWorkingSetSize >> 20),
+                      (unsigned long long)(pm.PrivateUsage >> 20), (unsigned long long)(kept >> 20), arenas.size());
++        }
+ #if defined(__linux__) && defined(__GLIBC__)
+-            // (glibc's heap: what its arenas hold free. The shader translation and the loads' decoding leave their garbage spread through
+-            // the threads' arenas (26 of them, 1.2 GB resident in Kokiri Forest, the heap's growth in a scene change never going back),
+-            // and a free chunk's pages are the process's till malloc_trim gives them to the system. Asked on a worker, when 192 MB or
+-            // more are free: RX_VK_MALLOC_TRIM_MB=<n>: that many, 0: never; the "vk: malloc:" line says what the arenas hold)
+-            // (every 1800 presents: mallinfo2 walks every free chunk of every arena with its lock held)
++        // (glibc's heap: what its arenas hold free. The shader translation and the loads' decoding leave their garbage spread through
++        // the threads' arenas (26 of them, 1.2 GB resident in Kokiri Forest, the heap's growth in a scene change never going back),
++        // and a free chunk's pages are the process's till malloc_trim gives them to the system. Asked on a worker, when 192 MB or
++        // more are free (64 MB while Linux memory pressure is on): RX_VK_MALLOC_TRIM_MB=<n>: that many, 0: never; the "vk: malloc:"
++        // line says what the arenas hold)
++        // (every 1800 presents, or every 600 while Linux memory pressure is on so long as the last trim gave at least 16 MB back
++        // or free arena bytes grew by 64 MB since it: mallinfo2 walks every free chunk of every arena with its lock held)
++        {
+             static std::atomic<bool> busy{false};
+-            if (frame_no % 1800 == 0 && !busy.exchange(true))
+-                jobs_push([] {
++            static std::atomic<uint64_t> last_unreturned_mb{0};
++            const bool log_malloc = frame_no % 1800 == 0;
++            const bool check_malloc = log_malloc || (linux_pressed && frame_no % 600 == 0);
++            if (check_malloc && !busy.exchange(true)) {
++                const bool pressed_now = linux_pressed;
++                jobs_push([log_malloc, pressed_now] {
+                     static const uint64_t trim_mb = getenv("RX_VK_MALLOC_TRIM_MB") ? (uint64_t)atoll(getenv("RX_VK_MALLOC_TRIM_MB")) : 192;
++                    const uint64_t threshold_mb = pressed_now && trim_mb > 64 ? 64 : trim_mb;
+                     const struct mallinfo2 a = mallinfo2();
++                    const uint64_t free_mb = (uint64_t)(a.fordblks >> 20);
++                    const uint64_t prev_unreturned = last_unreturned_mb.load(std::memory_order_relaxed);
+                     PROCESS_MEMORY_COUNTERS_EX pm0{};
+                     pm0.cb = sizeof pm0;
+                     K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm0, sizeof pm0);
+-                    logf("vk: malloc: %llu MB in arenas (%llu MB in use, %llu MB free, %llu MB of it at the tops), %llu MB mapped",
+-                         (unsigned long long)(a.arena >> 20), (unsigned long long)(a.uordblks >> 20), (unsigned long long)(a.fordblks >> 20),
+-                         (unsigned long long)(a.keepcost >> 20), (unsigned long long)(a.hblkhd >> 20));
+-                    if (trim_mb && (a.fordblks >> 20) >= trim_mb) {
++                    if (log_malloc)
++                        logf("vk: malloc: %llu MB in arenas (%llu MB in use, %llu MB free, %llu MB of it at the tops), %llu MB mapped",
++                             (unsigned long long)(a.arena >> 20), (unsigned long long)(a.uordblks >> 20), (unsigned long long)free_mb,
++                             (unsigned long long)(a.keepcost >> 20), (unsigned long long)(a.hblkhd >> 20));
++                    if (threshold_mb && free_mb >= threshold_mb && (log_malloc || !prev_unreturned || free_mb >= prev_unreturned + 64)) {
++                        uint64_t avail0 = 0, swap0 = 0, avail1 = 0, swap1 = 0;
++                        linux_pressure::read_meminfo(&avail0, &swap0);
+                         const auto t0 = std::chrono::steady_clock::now();
+                         malloc_trim(0);
+                         PROCESS_MEMORY_COUNTERS_EX pm1{};
+                         pm1.cb = sizeof pm1;
+                         K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pm1, sizeof pm1);
++                        linux_pressure::read_meminfo(&avail1, &swap1);
++                        const uint64_t now_free_mb = (uint64_t)(mallinfo2().fordblks >> 20);
++                        const uint64_t before_mb = (uint64_t)(pm0.PrivateUsage >> 20), after_mb = (uint64_t)(pm1.PrivateUsage >> 20);
++                        const uint64_t priv_saved_mb = before_mb > after_mb ? before_mb - after_mb : 0;
++                        const uint64_t sys_saved_mb = (avail1 + swap1) > (avail0 + swap0) ? ((avail1 + swap1) - (avail0 + swap0)) >> 20 : 0;
++                        const uint64_t saved_mb = std::max(priv_saved_mb, sys_saved_mb);
++                        last_unreturned_mb.store(saved_mb < 16 ? now_free_mb : 0, std::memory_order_relaxed);
+                         logf("vk: malloc_trim: %llu MB free in the arenas now, the process's private memory %llu -> %llu MB (%.0f ms)",
+-                             (unsigned long long)(mallinfo2().fordblks >> 20), (unsigned long long)(pm0.PrivateUsage >> 20),
+-                             (unsigned long long)(pm1.PrivateUsage >> 20),
++                             (unsigned long long)now_free_mb, (unsigned long long)before_mb, (unsigned long long)after_mb,
+                              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                     }
+                     busy = false;
+                 });
+-#endif
++            }
+         }
++#endif
+     }
+     bc_scratch_idle();
+     compact_step(completed);   // (longshot, RX_VK_COMPACT: while its pass is open nothing of the textures' pool is freed)
+@@ -4434,6 +4569,73 @@ void texture_frame(uint64_t completed) {
+             }
+         }
+     }
++    // (longshot) and Linux's memory pressure (MemAvailable and SwapFree in /proc/meminfo, linux_pressure.h): on a 16 GB Steam
++    // Deck OLED, guest shmem (5.6-6.0 GB), renderer anon (~3.9 GB) and VMA blocks share the same RAM while RADV's device-heap
++    // budget (~7.5 GB) says VRAM is under 50% used. Every VMA block is kernel-pinned in physical RAM and cannot be swapped out,
++    // so MemAvailable dipped to 180-440 MB with 4-7 GB in swap and earlyoom killed the game. Sampled every 30 presents (and shared
++    // with imports_give_back through linux_shortfall_bytes so no file is read under pools_mu): below RX_VK_AVAIL_RESERVE_MB
++    // (1536 MB) of MemAvailable or RX_VK_COMMIT_RESERVE_MB (2560 MB) of MemAvailable + SwapFree, PressureHold cuts the texture
++    // budget on an integrated GPU (where VRAM is system RAM) from the texture total at entry (with a 512 MB floor) and steps it
++    // back up once both reserves clear by 256 MB (kClearMargin), while the RAM-side valves (staging arenas, capture spares,
++    // idle imports, malloc_trim) run on every GPU
++    {
++        static linux_pressure::PressureHold hold;
++        static uint64_t cached_avail = 0, cached_swap = 0, held_cached = UINT64_MAX;
++        static bool cached_has_swap = true, have_meminfo = false;
++        const uint64_t avail_res = linux_avail_reserve(), commit_res = commit_reserve();
++        if (!avail_res && !commit_res) {
++            hold = {};
++            held_cached = UINT64_MAX;
++            linux_pressed = false;
++            linux_shortfall_bytes.store(0, std::memory_order_release);
++        } else {
++            const bool sampled_now = !have_meminfo || frame_no % 30 == 0;
++            if (sampled_now)
++                have_meminfo = linux_pressure::read_meminfo(&cached_avail, &cached_swap, nullptr, nullptr, &cached_has_swap);
++            if (have_meminfo) {
++                const bool was_active = hold.active;
++                const uint64_t over = linux_pressure::shortfall(cached_avail, cached_swap, avail_res, commit_res, cached_has_swap);
++                if (sampled_now) {
++                    linux_shortfall_bytes.store(over, std::memory_order_relaxed);
++                    linux_shortfall_seq.fetch_add(1, std::memory_order_release);
++                    held_cached = hold.step(total_bytes, cached_avail, cached_swap, avail_res, commit_res,
++                                            linux_pressure::kClearMargin, linux_pressure::kBudgetFloor, cached_has_swap);
++                }
++                const uint64_t held = held_cached;
++                linux_pressed = hold.active;
++                if (hold.active && !was_active) linux_entered_pressure = true;
++                if (hold.active) {
++                    const bool igpu = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
++                    if (igpu) {
++                        budget = std::min(budget, held);
++                        rule_budget = std::min(rule_budget, held);
++                        pool_pressed = true;
++                        compact.pressed = true;
++                        if (compact.next_check > frame_no + vram_compact::rest(true))
++                            compact.next_check = frame_no + vram_compact::rest(true);
++                    }
++                    static uint64_t said_at;
++                    if (!said_at || frame_no - said_at >= 600) {
++                        said_at = frame_no;
++                        if (igpu)
++                            logf("vk: memory pressure on Linux: %llu MB available, %llu MB swap free (reserves %llu / %llu MB); the "
++                                 "textures' budget %s %llu MB of their %llu MB (RX_VK_AVAIL_RESERVE_MB, RX_VK_COMMIT_RESERVE_MB)",
++                                 (unsigned long long)(cached_avail >> 20), (unsigned long long)(cached_swap >> 20),
++                                 (unsigned long long)(avail_res >> 20), (unsigned long long)(commit_res >> 20),
++                                 budget < total_bytes ? "down to" : "held at",
++                                 (unsigned long long)(budget >> 20), (unsigned long long)(total_bytes >> 20));
++                        else
++                            logf("vk: memory pressure on Linux: %llu MB available, %llu MB swap free (reserves %llu / %llu MB); the "
++                                 "textures' budget is not cut on a discrete GPU (%llu MB, %llu MB in use) (RX_VK_AVAIL_RESERVE_MB, "
++                                 "RX_VK_COMMIT_RESERVE_MB)",
++                                 (unsigned long long)(cached_avail >> 20), (unsigned long long)(cached_swap >> 20),
++                                 (unsigned long long)(avail_res >> 20), (unsigned long long)(commit_res >> 20),
++                                 (unsigned long long)(budget >> 20), (unsigned long long)(total_bytes >> 20));
++                    }
++                }
++            }
++        }
++    }
+     // (longshot) the 90% rule and the driver's limit let go of their excess, not of an eighth of the cache: vram_compact.h.
+     // RX_VK_EVICT_EXCESS=0: to 7/8 of their budget, as before
+     static const bool excess_only = !getenv("RX_VK_EVICT_EXCESS") || atoi(getenv("RX_VK_EVICT_EXCESS")) != 0;
+diff --git a/gpu/vk/vk_texture.h b/gpu/vk/vk_texture.h
+index 40f97a17..d0883b51 100644
+--- a/gpu/vk/vk_texture.h
++++ b/gpu/vk/vk_texture.h
+@@ -29,6 +29,7 @@ struct Texture {
+     VkImageCreateFlags create_flags = 0;   // (longshot: as its image was made, for the compaction's copy of it)
+     uint32_t width = 1, height = 1, depth = 1, levels = 1, layers = 1;   // the image's (after skip)
+     uint32_t skip = 0;        // top levels of the texture left out (huge textures: RX_VK_TEX_MAX_DIM, _MAX_MB)
++    uint32_t shrink = 0;      // (Deckport, RX_VK_SHADOW_DIV) a huge depth target made 1/shrink of its size
+     // (a huge array kept whole as a sparse resident image instead: each layer gets device memory when it is first
+     // written, so only what the game streams in costs VRAM. MKW's terrain arrays, 8192 x 8192 x 68 BC6H: 5.8 GB
+     // each, written by the GPU's copies into level 0, which a texture with its top level left out lost)
+diff --git a/gpu/vk/vk_xfer.cpp b/gpu/vk/vk_xfer.cpp
+index bbd02ea9..3e9b603a 100644
+--- a/gpu/vk/vk_xfer.cpp
++++ b/gpu/vk/vk_xfer.cpp
+@@ -175,6 +175,11 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
+     // it fills is kept (texture_frame: a texture the GPU filled once is not evicted). RX_VK_B2T_CPU=1: on the CPU too)
+     static const bool b2t_gpu = !env_on("RX_VK_B2T_CPU");
+     const bool astc = to_image && p.tex && vk_format(view_nvn_format(p.tex, p.has_view ? &p.view : nullptr)).astc;
++    if (p.tex)
++        if (Texture* st_ = texture_get(p.tex, false); st_ && st_->shrink) {   // (Deckport, RX_VK_SHADOW_DIV)
++            warn(9, "buffer copy with a shrunk depth target (RX_VK_SHADOW_DIV): skipped");
++            return;
++        }
+     if (to_image && p.tex) {   // (RX_VK_LOG_BIG_COPY)
+         if (Texture* t = texture_get(p.tex, false))
+             log_big_copy(b2t_gpu && !astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
+@@ -244,6 +249,10 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
+     Sub s, d;
+     if (!resolve(p.src, &p.sv, p.has_sv != 0, p.sr, s, true)) return;
+     if (!resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true)) return;
++    if (s.tex->shrink || d.tex->shrink) {   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape)
++        warn(8, "texture copy with a shrunk depth target (RX_VK_SHADOW_DIV): skipped");
++        return;
++    }
+     {   // (RX_VK_LOG_COPY: the texture copies, 400 of them)
+         static const bool log_copy = env_on("RX_VK_LOG_COPY");
+         static int logged;
+diff --git a/nx2/bake_ds/bake_ds.cpp b/nx2/bake_ds/bake_ds.cpp
+index b335c4bf..e6c6e8b3 100644
+--- a/nx2/bake_ds/bake_ds.cpp
++++ b/nx2/bake_ds/bake_ds.cpp
+@@ -303,13 +303,17 @@ StagePackage parse_stage(const uint8_t* ctl, const std::vector<uint8_t>& area) {
+     using Shader::Ampere::Instruction;
+     std::vector<Instruction> native;
+     Shader::Ampere::ProgramCaptureState capture;
++    // (live: a word that would branch outside every program ends the capture before it; the program is refused for
++    // that word only if the code before it does not lower, parse_code)
++    uint32_t outside = ~0u;
+     for (uint32_t i = 0; hdr + (i + 1) * sizeof(Instruction) <= len; i++) {
+         Instruction& insn = native.emplace_back();
+         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
+         const auto r = capture.Observe(insn, i);
+         if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+-            p.error = "captured program's branch target is outside it";
+-            return p;
++            native.pop_back();
++            outside = i;
++            break;
+         }
+         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
+     }
+@@ -318,7 +322,8 @@ StagePackage parse_stage(const uint8_t* ctl, const std::vector<uint8_t>& area) {
+     if (!lowered) {
+         char off[16];
+         std::snprintf(off, sizeof off, "%#x", lowered.error_offset);
+-        p.error = std::string(lowered.error) + " (at +" + off + ")";
++        p.error = std::string(outside != ~0u ? "captured program's branch target is outside it, and the code before it does not lower: " : "") +
++                  std::string(lowered.error) + " (at +" + off + ")";
+         return p;
+     }
+     p.texture_bound = lowered.required_texture_buffer;
+diff --git a/nx2/build.py b/nx2/build.py
+index 4fe5ef54..04a671b3 100644
+--- a/nx2/build.py
++++ b/nx2/build.py
+@@ -1236,7 +1236,7 @@ def main():
+             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
+             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
+             "-include", "string", "-include", "vector",
+-            "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
++            "-std=c++20", "-" + os.environ.get("RX_VK_OPT", "O2"), *os.environ.get("RX_VK_CXX_EXTRA", "").split(), "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
+             *(["-DLONGSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
+             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
+             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
+@@ -1517,7 +1517,7 @@ def main():
+         open(vrsp, "w", encoding="utf-8").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in vk_jobs))
+         t = time.time()
+         if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
+-            link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-fuse-ld=lld", "-shared", "-o", vdll] + \
++            link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-fuse-ld=lld", "-shared", *os.environ.get("RX_VK_LD_EXTRA", "").split(), "-o", vdll] + \
+                 linker("-Map=" + vdll + ".map") + ["-Wl,-Bsymbolic", "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
+                 ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
+         else:   # (RX_VK_PGO=gen: no profile library, as in the game's link; host/pgo_rt.c writes the counters)

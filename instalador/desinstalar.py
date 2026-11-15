@@ -5,8 +5,9 @@
 
 O que sai: o atalho da Steam e as artes dele, o lançador e o Longshot baixado com as ferramentas dele (~/.local/share/zelda-oot-deck), a
 configuração (~/.config/zelda-oot-deck), os mods gerados e os logs.
-O que fica: os saves (~/.local/share/longshot/save), o .nup do jogo e, sem --com-jogo, a pasta do jogo montada, que volta
-ao renderizador original do Longshot. Uma pasta que o jogador já tinha montado antes do port nunca é apagada.
+O que fica: os saves (~/.local/share/longshot/save), o .nup do jogo e, sem --com-jogo, a pasta do jogo montada. Desde a
+v0.1.1 o renderizador do port é compilado na montagem e fica nela (as versões anteriores trocavam o arquivo, e esse volta
+ao original do Longshot). Uma pasta que o jogador já tinha montado antes do port nunca é apagada.
 """
 from __future__ import annotations
 
@@ -44,6 +45,12 @@ def main() -> int:
     raiz = Path(c["raiz"]) if c.get("raiz") else None
     jogo = Path(c["jogo"]) if c.get("jogo") else None
     de_fora = bool(c.get("jogo_de_fora"))
+
+    # a atualização em segundo plano, se estiver rodando ou esperando o jogo fechar
+    import os
+    import subprocess
+    subprocess.run(["systemctl", "--user", "stop", "zelda-oot-deck-atualizar"], stderr=subprocess.DEVNULL,
+                   env=dict(os.environ, XDG_RUNTIME_DIR=os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"))
 
     n = steam.remover_atalho()
     print(f"atalho da Steam: {n} entrada(s) removida(s)")

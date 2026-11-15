@@ -32,15 +32,29 @@ de mexer aqui.
 ## Instalador
 
 Tk, tela cheia 1280x800, controle e toque, no molde do `deckport-infamous-ss`. `instalador/nucleo.py` faz o trabalho:
-baixa o Longshot v3.0.0-rc.3 oficial (git.magicbean.dev, soma SHA-256 conferida), aplica o `patch_800p.py` no builder,
-monta o jogo com ele a partir do `.nup` (ou de uma pasta de outra versão, por `--romfs` e `--exefs`; uma pasta já
-montada pela rc.3 é usada como está), troca o renderizador, gera os mods com o Python que vem dentro do Longshot, copia
-os saves do Hookshot e cria o atalho. As ferramentas de compilação que o Longshot baixa ficam em
-`~/.local/share/zelda-oot-deck/longshot/builder`.
+baixa o builder do Longshot (`BASE_VERSAO`, hoje a nightly-189; tenta o git.magicbean.dev e depois o anexo do nosso
+release, porque as nightlies somem; soma SHA-256 conferida), extrai, aplica o `patch_800p.py` e o
+`patches/deckport-longshot-<base>.patch` nas fontes dele, e monta o jogo a partir do `.nup` (ou de uma pasta de outra
+versão, por `--romfs` e `--exefs`). Desde a nightly 18x o builder compila o renderizador na montagem (commit 25726217),
+então o renderizador do port sai da própria montagem, com os shaders preparados por ele. A pasta montada guarda
+`deckport_base.txt` com a identidade da base (versão do Longshot + soma do patch); igual à do pacote, ela é usada como
+está. Depois gera os mods com o Python do Longshot, copia os saves do Hookshot e cria o atalho. As ferramentas de
+compilação que o Longshot baixa ficam em `~/.local/share/zelda-oot-deck/longshot/builder`.
 Prévia no PC: `DEMO=1 PRINTS=<pasta> python instalador/instalador.py`.
 
-O renderizador do port só serve para executáveis com a interface 21 (Longshot até a v3.0.0-rc.3; a rc.4 já é a 22).
-Trocar a base é trabalho do `steam-deck` (patches, testes), e só depois a versão muda em `nucleo.py`.
+O patch do renderizador é feito no `steam-deck` (árvore do Longshot na VPS, `build-vk-ls.sh` com `ARVORE=` para
+conferir que compila) e entra aqui pelo `ferramentas/sincronizar.sh`. Trocar a base: o patch novo sobre a nightly
+nova, `BASE_*` em `nucleo.py`, e o AppImage da base como anexo do release (o espelho).
+
+## Atualização automática (desde a v0.1.1)
+
+`instalador/atualizar.py`, chamado pelo lançador. `aplicar` na abertura: põe no lugar a versão já baixada e abre o
+lançador de novo. `verificar` em segundo plano (unidade `zelda-oot-deck-atualizar`, fora da sessão do jogo): baixa a
+versão nova do GitHub e, se a identidade da base muda, monta o jogo de novo em `<raiz>/jogo-novo` quando o jogo está
+fechado e o Deck na tomada; a próxima abertura troca as pastas. Abrir o jogo interrompe a montagem (o `--work` do builder é
+reaproveitado). `ZELDA_ATUALIZAR=0` ou `"atualizar": false` no `config.json` desliga; `ZELDA_RELEASE_URL` aponta para um
+JSON de release falso nos testes. Log: `<raiz>/logs/atualizacao.log`. Quem tem a v0.1.0 precisa rodar o instalador uma
+vez para ganhar o atualizador.
 
 ## Publicação aprovada (2026-11-12)
 

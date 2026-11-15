@@ -1,5 +1,21 @@
 # Mudanças
 
+## v0.1.1 (versão de teste)
+
+- Base nova: Longshot nightly-189 (aa95d35f). O builder dele compila o renderizador na montagem, então o instalador
+  aplica o patch do port nas fontes do builder e o renderizador do port sai da própria montagem, com os shaders
+  preparados por ele. O AppImage da nightly vai também como anexo deste release, porque as nightlies somem do servidor
+  do Longshot.
+- Cinco correções do Longshot que saíram depois da nightly-189, levadas no patch: a memória devolvida quando o Linux
+  fica sem (testada pelo Longshot num Deck OLED: o swap zerava, com ela sobravam mais de 2 GB), a conta de espaço dos
+  arquivos de páginas que ela usa, shaders com mais de 1 MiB que ficavam de fora, a correção das páginas atrasadas e o
+  caminho alternativo dos mesh shaders com cargas maiores.
+- Atualização automática: o lançador vê em segundo plano se há versão nova, baixa e confere, e ela entra na abertura
+  seguinte. Quando a base muda, o jogo é montado de novo sozinho, com o jogo fechado e o Deck na tomada, numa pasta ao
+  lado; abrir o jogo pausa a montagem. `"atualizar": false` no `config.json` desliga. Quem tem a v0.1.0 precisa rodar
+  o instalador uma vez.
+- O desinstalador para a atualização em segundo plano antes de apagar.
+
 ## v0.1.0 (versão de teste)
 
 Primeira versão aberta para testes.

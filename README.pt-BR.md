@@ -37,8 +37,8 @@ nada do jogo é baixado.
 - **A tela de abertura do port está desligada nesta versão.** Com o renderizador do Longshot ela travava na frente do
   jogo no Modo de Jogo, e o jogo agora abre direto no título.
 - **Só o começo do jogo foi testado.** Outros donos de Deck relatam travadas da GPU em áreas mais adiante.
-- A montagem do jogo no próprio Deck leva de uma a duas horas. Ela já prepara os shaders com o renderizador do port,
-  então a primeira abertura não repete esse trabalho.
+- A montagem do jogo no próprio Deck leva de uma a duas horas. Ela compila o renderizador do port e já prepara os
+  shaders com ele, então a primeira abertura não repete esse trabalho.
 - **A montagem a partir do `.nup` usa o código do próprio Longshot**, e o instalador ainda não a fez do começo ao fim
   nos nossos testes. A montagem a partir de uma pasta já montada (o mesmo builder, só sem ler o `.nup`) foi testada.
   Se falhar, abra uma issue com o arquivo `zelda-oot-deck/logs/montagem.log`.
@@ -61,8 +61,8 @@ nada do jogo é baixado.
    curl -L https://github.com/KewinBR/deckport-zelda-oot/releases/latest/download/instalar.sh | bash
    ```
 3. O instalador acha o `.nup` no Deck e no cartão SD, pergunta onde instalar e faz o resto: baixa o Longshot oficial
-   (v3.0.0-rc.3, com a soma SHA-256 conferida), monta o jogo, coloca o renderizador do port, gera as texturas e a
-   vegetação do Deck e cria o atalho na Steam.
+   (a nightly-189, com a soma SHA-256 conferida), aplica nele as alterações do port, monta o jogo (o renderizador do
+   port é compilado junto), gera as texturas e a vegetação do Deck e cria o atalho na Steam.
 4. Volte ao Modo de Jogo e abra pela biblioteca.
 
 O instalador não muda nada no sistema. Tudo fica na sua pasta pessoal e, se você escolher, no cartão SD. Quem jogava
@@ -70,15 +70,22 @@ no Hookshot tem os saves copiados para o Longshot na instalação; a pasta de sa
 
 ## Atualizar e desinstalar
 
-Para atualizar, rode o instalador de novo (passo 2 acima). Ele baixa a versão mais nova e aproveita o que já foi
-feito: o jogo montado e as texturas não são refeitos.
+A partir da v0.1.1 o port se atualiza sozinho. A cada abertura ele vê, em segundo plano, se saiu versão nova e a
+baixa; ela entra na abertura seguinte. Quando a versão nova muda a base do Longshot, o jogo precisa ser montado de novo:
+isso acontece sozinho com o jogo fechado e o Deck na tomada, numa pasta ao lado, e leva de uma a duas horas. Até
+terminar, você joga na versão que já tem; abrir o jogo pausa a montagem. As texturas e a vegetação não são refeitas.
+O registro fica em `zelda-oot-deck/logs/atualizacao.log`. Para desligar, ponha `"atualizar": false` em
+`~/.config/zelda-oot-deck/config.json`.
+
+Quem instalou a v0.1.0 precisa rodar o instalador uma vez (passo 2 acima) para ganhar a atualização automática.
 
 Para desinstalar, no Konsole:
 ```bash
 python3 ~/.local/share/zelda-oot-deck/instalador/desinstalar.py
 ```
 Isso tira o atalho da Steam, o port, o Longshot baixado, a configuração, os mods gerados e os logs. Os saves continuam
-em `~/.local/share/longshot`, e a pasta do jogo montado também fica, de volta ao renderizador original do Longshot.
+em `~/.local/share/longshot`, e a pasta do jogo montado também fica (com o renderizador do port, que foi compilado
+nela).
 Com `--com-jogo`, a pasta do jogo que o instalador montou também é apagada. Uma pasta que você montou antes do port
 nunca é apagada.
 
@@ -90,12 +97,14 @@ do local que você escolheu na instalação. Diga a área do jogo e o que você 
 ## O que é do Longshot e o que é do Deckport
 
 O Longshot (e antes dele o Hookshot) faz o trabalho pesado: recompilar o jogo, traduzir os shaders e desenhar com
-Vulkan. Os ícones de botão do Deck também são dele. O Deckport troca o renderizador por uma versão com alterações para
-o Deck, e acrescenta o lançador, os mods gerados a partir da sua cópia do jogo, o menu e o instalador.
+Vulkan. Os ícones de botão do Deck também são dele. O Deckport altera o renderizador para o Deck e acrescenta o
+lançador, os mods gerados a partir da sua cópia do jogo, o menu, o instalador e a atualização automática.
 
-As alterações no renderizador estão em [patches/](patches/): `deckport-longshot-5e072fc8.patch` é a diferença inteira
-sobre o commit 5e072fc8 do Longshot, e `build-vk-ls.sh` mostra como ele é compilado. O `patch_800p.py` é aplicado pelo
-instalador no builder do Longshot, para a saída de 1424x800 valer também no perfil portátil.
+As alterações estão em [patches/](patches/). `deckport-longshot-nightly-189-aa95d35f.patch` é a diferença inteira sobre
+as fontes da nightly-189 do Longshot: as alterações do Deck e cinco correções do Longshot que saíram depois dela (a
+memória devolvida quando o Linux fica sem, shaders grandes que ficavam de fora, a correção das páginas atrasadas e o
+caminho alternativo dos mesh shaders). O instalador aplica esse patch e o `patch_800p.py` (a saída de 1424x800 também
+no perfil portátil) nas fontes do builder antes de montar.
 
 ## Créditos e licença
 
