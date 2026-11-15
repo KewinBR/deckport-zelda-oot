@@ -3,10 +3,10 @@
     python3 ~/.local/share/zelda-oot-deck/instalador/desinstalar.py            tira o port e mantém o jogo montado
     python3 ~/.local/share/zelda-oot-deck/instalador/desinstalar.py --com-jogo tira também o jogo montado pelo instalador
 
-O que sai: o atalho da Steam e as artes dele, o lançador e o Hookshot baixado (~/.local/share/zelda-oot-deck), a
+O que sai: o atalho da Steam e as artes dele, o lançador e o Longshot baixado com as ferramentas dele (~/.local/share/zelda-oot-deck), a
 configuração (~/.config/zelda-oot-deck), os mods gerados e os logs.
-O que fica: os saves (~/.local/share/hookshot), o .nup do jogo e, sem --com-jogo, a pasta do jogo montada, que volta
-ao renderizador original do Hookshot. Uma pasta que o jogador já tinha montado antes do port nunca é apagada.
+O que fica: os saves (~/.local/share/longshot/save), o .nup do jogo e, sem --com-jogo, a pasta do jogo montada, que volta
+ao renderizador original do Longshot. Uma pasta que o jogador já tinha montado antes do port nunca é apagada.
 """
 from __future__ import annotations
 
@@ -24,11 +24,12 @@ APPDIR = Path.home() / ".local" / "share" / APP
 
 
 def devolver_original(jogo: Path) -> None:
-    """Volta o renderizador e a tabela dos ícones que o Hookshot tinha posto na pasta do jogo."""
-    guardado = jogo / "bin" / "hookshot_vk.so.hookshot"
-    if guardado.exists():
-        guardado.replace(jogo / "bin" / "hookshot_vk.so")
-        print(f"renderizador original do Hookshot de volta em {jogo / 'bin'}")
+    """Volta o renderizador e a tabela dos ícones que o Longshot (ou o Hookshot, nas versões antigas) tinha posto."""
+    for nome in ("longshot", "hookshot"):
+        guardado = jogo / "bin" / f"{nome}_vk.so.{nome}"
+        if guardado.exists():
+            guardado.replace(jogo / "bin" / f"{nome}_vk.so")
+            print(f"renderizador original de volta em {jogo / 'bin'}")
     tabela = jogo / "prompts" / "rsizetable-hookshot.zs"
     if tabela.exists():
         tabela.replace(jogo / "prompts" / "rsizetable.zs")
@@ -69,7 +70,7 @@ def main() -> int:
         if pasta.is_dir():
             shutil.rmtree(pasta)
             print(f"apagado: {pasta}")
-    print("Pronto. Os saves continuam em ~/.local/share/hookshot.")
+    print("Pronto. Os saves continuam em ~/.local/share/longshot.")
     return 0
 
 

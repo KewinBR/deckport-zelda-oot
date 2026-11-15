@@ -17,10 +17,18 @@ scripts=${ZELDA_SCRIPTS:-$HOME/steam-deck/scripts}
 # game-2011 e game (v2.0.7): ZELDA_JOGO=$base/<pasta> volta pra elas.
 # v2.1.0 (game-210, 2026-11-11): Hookshot novo com os patches Deckport (patches/deckport-210.patch) e o menu em ImGui.
 # game-2012 fica de reserva: ZELDA_JOGO=$base/game-2012.
-jogo=${ZELDA_JOGO:-$base/game-210}
+# v2.2.0-rc.1 (game-220, 2026-11-13): Hookshot 2.2 com os patches Deckport (patches/deckport-220.patch, build-vk-220.sh).
+# No rancho (A/B de 2 rodadas cada): fps igual ou melhor (p10 21 contra 17-20), GTT 400 MB menor. game-210 fica de
+# reserva: ZELDA_JOGO=$base/game-210.
+jogo=${ZELDA_JOGO:-$base/game-220}
+[[ -z ${ZELDA_JOGO:-} && ! -f $jogo/image.bin ]] && jogo=$base/game-210
+# Longshot (a continuação do Hookshot; 2026-11-15, a base da versão pública): os arquivos trocam hookshot por longshot no
+# nome (bin/longshot, longshot_log.txt, longshot_options.ini, longshot_vk.so, saves em ~/.local/share/longshot).
+hs=hookshot; [[ -f $jogo/longshot_version.txt ]] && hs=longshot
+logj=$jogo/${hs}_log.txt vk=$jogo/bin/${hs}_vk.so verf=$jogo/${hs}_version.txt
 
 # Uma abertura por vez (lição do inFAMOUS: duas aberturas juntas e o earlyoom matou por memória).
-if pgrep -f "^\./(bin/)?hookshot$" >/dev/null || [[ -n $(find /tmp/zelda-abrindo -newermt '-60 seconds' 2>/dev/null) ]]; then
+if pgrep -f "^\./(bin/)?(hookshot|longshot)$" >/dev/null || [[ -n $(find /tmp/zelda-abrindo -newermt '-60 seconds' 2>/dev/null) ]]; then
     echo "rodar-zelda: o jogo já está abrindo ou aberto, saindo" >&2
     exit 0
 fi
@@ -43,7 +51,7 @@ fi
 export HOS_FULLSCREEN=${HOS_FULLSCREEN:-1}
 export HOS_HANDHELD=${HOS_HANDHELD:-1}
 export HOS_FPS_LOG=${HOS_FPS_LOG:-1}
-export HOOKSHOT_NO_UPDATE_CHECK=1
+export HOOKSHOT_NO_UPDATE_CHECK=1 LONGSHOT_NO_UPDATE_CHECK=1
 # 16:10 sem barras (patch_1610.py no executável): a imagem 2304x1440, câmera 1,6, interface no meio na vertical.
 # Só na pasta game-dp; nas outras o executável ignora telas mais altas que 16:9.
 export HOS_ASPECT=${HOS_ASPECT:-1.6}
@@ -52,7 +60,7 @@ export HOS_ASPECT=${HOS_ASPECT:-1.6}
 # ignorado (volta pra saída do jogo).
 # v2.1.0 (game-210): a saída é um tamanho, e o "5" antigo virou 5120x2880 lá; patch_800p.py faz o tamanho valer no
 # perfil portátil.
-if grep -qE "^version=v2\.([1-9]|[1-9][0-9])\." "$jogo/hookshot_version.txt" 2>/dev/null || [[ $jogo == *game-210* ]]; then export HOS_OUTPUT_RES=${HOS_OUTPUT_RES:-1424x800}; else export HOS_OUTPUT_RES=${HOS_OUTPUT_RES:-5}; fi
+if [[ $hs == longshot || $jogo == *game-210* ]] || grep -qE "^version=v2\.([1-9]|[1-9][0-9])\." "$verf" 2>/dev/null; then export HOS_OUTPUT_RES=${HOS_OUTPUT_RES:-1424x800}; else export HOS_OUTPUT_RES=${HOS_OUTPUT_RES:-5}; fi
 # Mod de texturas reduzidas (ferramentas/reduzir_texturas.py, gerado na VPS a partir do romfs, fica só no Deck e na VPS,
 # nunca no git): texturas com lado acima de 1024 perdem os níveis de cima (2018 texturas, 2,9 GB a menos de 16,2 GB) e
 # a tabela de tamanhos acompanha. Sem a pasta, o jogo segue sem mod.
@@ -67,7 +75,7 @@ if grep -qE "^version=v2\.([1-9]|[1-9][0-9])\." "$jogo/hookshot_version.txt" 2>/
 # HOS_MODS ou RX_VK_SHADOW_DIV já definidos de fora (exp-env, teste) vencem.
 mods_fora=${HOS_MODS:-}; sombra_fora=${RX_VK_SHADOW_DIV:-}
 opcoes_deckport() {
-    local ini=$jogo/hookshot_options.ini tex=1 dist=2 grama=0 sombra=1
+    local ini=$jogo/${hs}_options.ini tex=1 dist=2 grama=0 sombra=1
     if [[ -f $ini ]]; then
         tex=$(awk -F= '$1=="deckport_textures"{print $2+0}' "$ini"); tex=${tex:-1}
         dist=$(awk -F= '$1=="deckport_distance"{print $2+0}' "$ini"); dist=${dist:-2}
@@ -88,8 +96,25 @@ opcoes_deckport() {
     # aumentada (ferramentas/tabela_prompts.py), e vai para prompts/rsizetable.zs, que o Hookshot serve.
     local tab=$tx/prompts-rsizetable.zs
     if [[ -f $tab && -d $jogo/prompts && -z $mods_fora ]]; then
-        [[ -f $jogo/prompts/rsizetable-hookshot.zs ]] || cp "$jogo/prompts/rsizetable.zs" "$jogo/prompts/rsizetable-hookshot.zs"
-        cmp -s "$tab" "$jogo/prompts/rsizetable.zs" || { cp "$tab" "$jogo/prompts/rsizetable.zs.novo" && mv "$jogo/prompts/rsizetable.zs.novo" "$jogo/prompts/rsizetable.zs"; }
+        # 2026-11-13: a entrada da fonte dos ícones muda com a versão (20488 bytes no 2.1, 55376 no 2.2). A tabela do mod
+        # vinha com a do 2.1, e no 2.2 a fonte ficava cortada (anel de ação com o botão vazio). Agora a tabela é feita para
+        # o jogo montado, com a fonte da tabela do Hookshot dele (scripts/juntar-tabela-prompts.py).
+        local p=$jogo/prompts sha_atual
+        sha_atual=$(sha256sum < "$p/rsizetable.zs" | cut -c1-64)
+        # Uma tabela no jogo que não é das que pusemos veio de uma montagem nova: é a do Hookshot.
+        if [[ ! -f $p/rsizetable-hookshot.zs ]] || { [[ -f $p/rsizetable-deckport.sha ]] && ! grep -qxF "$sha_atual" "$p/rsizetable-deckport.sha"; }; then
+            cp "$p/rsizetable.zs" "$p/rsizetable-hookshot.zs.novo" && mv "$p/rsizetable-hookshot.zs.novo" "$p/rsizetable-hookshot.zs"
+        fi
+        local feita=$p/rsizetable-deckport-$(basename "$tx").zs
+        # (2026-11-13: a primeira versão escrevia o .zs sem o tamanho descompactado no cabeçalho e o jogo crashava no
+        # terreno; com o tamanho, passa.) ZELDA_TABELA_FONTE=0 usa a tabela do mod como está.
+        [[ ${ZELDA_TABELA_FONTE:-1} == 1 ]] || feita=$tab
+        if [[ $feita != "$tab" && ( ! -f $feita || $feita -ot $tab || $feita -ot $p/rsizetable-hookshot.zs ) ]]; then
+            python3 "$scripts/juntar-tabela-prompts.py" "$tab" "$p/rsizetable-hookshot.zs" "$feita" || feita=$tab
+        fi
+        cmp -s "$feita" "$p/rsizetable.zs" || { cp "$feita" "$p/rsizetable.zs.novo" && mv "$p/rsizetable.zs.novo" "$p/rsizetable.zs"; }
+        sha_atual=$(sha256sum < "$p/rsizetable.zs" | cut -c1-64)
+        grep -qxF "$sha_atual" "$p/rsizetable-deckport.sha" 2>/dev/null || echo "$sha_atual" >> "$p/rsizetable-deckport.sha"
     fi
     [[ -d $base/veg-niveis/d${dist}g${grama} ]] && ln -s "$base/veg-niveis/d${dist}g${grama}/deckport-vegetacao" "$m/deckport-vegetacao"
     export HOS_MODS=${mods_fora:-$m}
@@ -119,6 +144,10 @@ export RX_VK_FORCE_MESH_FALLBACK=${RX_VK_FORCE_MESH_FALLBACK:-0}
 # v2.1.0: só os desenhos com task shader vão pelo caminho alternativo (o travamento está no task 2c56dc1006942f74; os
 # mesh sem task ficam nativos). No rancho girando a câmera: 13 min sem travar, 22-24 fps. RX_VK_TASK_MESH_FALLBACK=0 volta.
 export RX_VK_TASK_MESH_FALLBACK=${RX_VK_TASK_MESH_FALLBACK:-1}
+# v2.2: sem mesh shaders o padrão é carregar todos os programas guardados antes do título (RX_VK_LOAD=start), e a RAM
+# livre caía a 0,8-1,3 GB na abertura. Com create cada programa é carregado quando o jogo o cria: 2,2 GB livres no
+# mínimo e o mesmo fps no rancho (2026-11-13). A v2.1 ignora a variável. RX_VK_LOAD=start volta.
+export RX_VK_LOAD=${RX_VK_LOAD:-create}
 # Texturas (2026-11-10): dentro do castelo elas chegavam a 1,95 GB do orçamento de 2048 e a memória do Deck acabava;
 # com 1024 o renderizador passa um pouco do limite (~1,3 GB), mas é ~0,6 GB a menos.
 export RX_VK_VRAM_MB=${RX_VK_VRAM_MB:-1024}
@@ -154,8 +183,41 @@ export RX_VK_MIRROR=${RX_VK_MIRROR:-1}
 [ "$RX_VK_MIRROR" = 1 ] && export RX_VK_MIRROR_MB=${mirror_fora:-512}   # (512: 22 piscadas por 1000 jogando, não pior que 1024)
 # A v2.1.0 faz a CPU esperar pelos resultados que a GPU escreve (#1375 do Hookshot). Sem a espera o jogo os lê com um
 # quadro de atraso, como a v2.0.14 fazia: no rancho, parado, 23,7 fps viraram 25,1 e 28,9. RX_VK_NO_READBACK_WAIT=0 volta.
-export RX_VK_NO_READBACK_WAIT=${RX_VK_NO_READBACK_WAIT:-1}
-[ "$RX_VK_NO_READBACK_WAIT" = 0 ] && unset RX_VK_NO_READBACK_WAIT
+# 2026-11-14 (2.2, patches/patch_readback_sel.py no nosso renderizador): sem espera nenhuma o medidor de exposição é lido
+# antes da hora e a luz pisca. Agora espera por todos menos os três que custam (0x3980, o recorte da câmera; 0x9b040 e
+# 0x8b040): em Kokiri, 29,2 e 26,3 fps (igual a sem espera) e 7,8 e 11,4 piscadas por mil (contra 28 e 29).
+# ZELDA_ESPERA_SELETIVA=0 volta ao sem espera; o 2.1 (sem o patch) fica sem espera.
+if [[ ${ZELDA_ESPERA_SELETIVA:-1} == 1 && -z ${RX_VK_NO_READBACK_WAIT:-} ]] && { [[ $hs == longshot ]] || grep -qE "^version=v2\.2\." "$verf" 2>/dev/null; } \
+   && grep -q RX_VK_READBACK_SKIP "$vk" 2>/dev/null; then
+    export RX_VK_READBACK_SKIP=${RX_VK_READBACK_SKIP:-0x3980,0x9b040,0x8b040}
+    echo "espera seletiva dos resultados da GPU: pula $RX_VK_READBACK_SKIP"
+else
+    export RX_VK_NO_READBACK_WAIT=${RX_VK_NO_READBACK_WAIT:-1}
+fi
+[ "${RX_VK_NO_READBACK_WAIT:-}" = 0 ] && unset RX_VK_NO_READBACK_WAIT
+# 2026-11-14: o renderizador do Longshot (a continuação do Hookshot) no nosso jogo 2.2, com os nossos patches
+# (patches/deckport-longshot-*.patch). Ele lê e grava longshot_options.ini e guarda os caches em cache/. O ini vira um link
+# pro hookshot_options.ini, que o executável e o menu do port continuam lendo. No Deck os espelhos esparsos dele derrubam o
+# fps (20 contra 30 em Kokiri, com o limite de 512 MB): RX_VK_MIRROR_SPARSE=0. A thread de gravação (RX_VK_RECORDER=thread
+# com RECORDER_OWN=1 e RECORDER_IDLE=wait) empatou em 3 rodadas: fica desligada. A correção das páginas atrasadas
+# (RX_VK_LATE_FIX) também sai: sem ela, 3 rodadas em Kokiri deram 14.338 quadros (o nosso renderizador 13.295, o Longshot
+# com ela 13.755), metade dos quadros acima de 50 ms e piscadas como as do nosso (10 por mil); a espera seletiva
+# (RX_VK_READBACK_SKIP, nosso patch) já cuida dessas leituras. ZELDA_LONGSHOT_AJUSTES=0 deixa como vem.
+# (na pasta montada pelo próprio Longshot o ini dele é o de verdade e fica como está)
+if grep -q longshot_options.ini "$vk" 2>/dev/null; then
+    li=$jogo/longshot_options.ini
+    if [[ $hs == hookshot && ! -L $li ]]; then
+        [[ -f $li ]] && mv "$li" "$li.antes-link"
+        ln -s hookshot_options.ini "$li"
+    fi
+    if [[ ${ZELDA_LONGSHOT_AJUSTES:-1} == 1 ]]; then
+        export RX_VK_MIRROR_SPARSE=${RX_VK_MIRROR_SPARSE:-0} RX_VK_LATE_FIX=${RX_VK_LATE_FIX:-0}
+        # (2026-11-14, primeira jogatina: no modo jogo a tela de abertura dele trava na frente do jogo, "the window is not
+        # being shown"; o jogo roda por trás a 60 fps no título, com música. Sem a tela de abertura, por enquanto)
+        export RX_VK_STARTUP_SCREEN=${RX_VK_STARTUP_SCREEN:-0}
+    fi
+    echo "renderizador do Longshot: espelhos esparsos ${RX_VK_MIRROR_SPARSE:-padrão}, correção das páginas atrasadas ${RX_VK_LATE_FIX:-padrão}"
+fi
 # Dados de cada sessão para análise: o contador de piscadas no log do jogo (uma linha a cada 600 quadros).
 export RX_VK_AFLASH=${RX_VK_AFLASH:-1}
 # Controle remoto pra teste (não atrapalha o controle de verdade).
@@ -168,24 +230,38 @@ env | grep -iE '^SDL_|SteamVirtualGamepad|STEAM_INPUT' | sed 's/^/env: /' || tru
 controle=(env -u SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD SDL_GAMECONTROLLER_IGNORE_DEVICES=0x28DE/0x11FF)
 
 # Giroscópio: a Steam deixa desligado; liga depois que o jogo abriu o controle, e repete enquanto ele roda.
-rm -f "$jogo/hookshot_log.txt"
+rm -f "$logj"
 ajudantes=()
-setsid python3 "$scripts/ligar-imu.py" --manter "$jogo/hookshot_log.txt" \
-    --marca "hid: controller 0 connected" --processo "^\./(bin/)?hooksho[t]$" --atual "$jogo/hookshot_log.txt" \
+setsid python3 "$scripts/ligar-imu.py" --manter "$logj" \
+    --marca "hid: controller 0 connected" --processo "^\./(bin/)?${hs%?}[${hs: -1}]$" --atual "$logj" \
     --espera 1800 </dev/null >/dev/null 2>&1 &
 ajudantes+=($!)
 
 # Botão Steam e menu rápido pausam o jogo (o gamescope não manda perda de foco).
 if [[ -n ${SteamAppId:-} ]]; then
-    setsid python3 "$scripts/congelar-no-menu-steam.py" "$SteamAppId" "^\./(bin/)?hookshot$" \
+    setsid python3 "$scripts/congelar-no-menu-steam.py" "$SteamAppId" "^\./(bin/)?$hs$" \
         </dev/null >>"$base/logs/congelar.log" 2>&1 &
+    ajudantes+=($!)
+fi
+# Capturador de bugs (2026-11-13): L4, R4, L5 ou R5 tira print e guarda o log do momento em $base/bugs.
+if [[ -f $scripts/capturar-bug.py ]]; then
+    setsid python3 "$scripts/capturar-bug.py" --log-jogo "$logj" --log-sessao "$log" \
+        --saida "$base/bugs" --processo "^\./(bin/)?$hs$" </dev/null >>"$log" 2>&1 &
     ajudantes+=($!)
 fi
 # Ao sair, os ajudantes saem junto: com um deles vivo a Steam acha que o jogo segue aberto (o reaper espera todos).
 trap 'kill "${ajudantes[@]}" 2>/dev/null' EXIT
 
+# Cópia do save a cada abertura (2026-11-13: um teste apagou a pasta de save e levou uma noite de jogo; os testes agora
+# usam XDG_DATA_HOME próprio). Fica em $base/saves/auto, as 20 mais novas.
+sv=${XDG_DATA_HOME:-$HOME/.local/share}/$hs/save
+if [[ -d $sv ]]; then
+    mkdir -p "$base/saves/auto"
+    tar czf "$base/saves/auto/save-$(date +%Y%m%d-%H%M%S).tgz" -C "$(dirname "$sv")" save && echo "save copiado para $base/saves/auto"
+    ls -1t "$base/saves/auto"/save-*.tgz 2>/dev/null | tail -n +21 | xargs -r rm -f
+fi
 cd "$jogo"
-bin=./hookshot; [[ -x ./bin/hookshot ]] && bin=./bin/hookshot
+bin=./$hs; [[ -x ./bin/$hs ]] && bin=./bin/$hs
 # Huge pages transparentes desligadas só para o jogo (2026-11-12, pista do issue #1000 do Hookshot): o SteamOS vem com
 # THP "always", e pedidos de blocos grandes com a memória fragmentada fazem o kernel despejar o jogo para o swap. O
 # prctl vale para o processo e passa pelo exec; o sistema não muda. No rancho, em 10 min, o fps não mudou; o efeito
@@ -245,11 +321,11 @@ if [[ -f $jogo/deckport_reiniciar ]]; then
 fi
 break
 done
-tail -40 "$jogo/hookshot_log.txt" 2>/dev/null | sed 's/^/jogo: /'
+tail -40 "$logj" 2>/dev/null | sed 's/^/jogo: /'
 # O log inteiro do jogo fica guardado por sessão (fps, tempos de CPU e GPU por quadro, piscadas, memória), comprimido;
 # o hookshot_log.txt é apagado na abertura seguinte. Ficam as 30 sessões mais novas.
-if [ -s "$jogo/hookshot_log.txt" ]; then
-    gzip -c "$jogo/hookshot_log.txt" > "${log%.log}-jogo.txt.gz" 2>/dev/null
+if [ -s "$logj" ]; then
+    gzip -c "$logj" > "${log%.log}-jogo.txt.gz" 2>/dev/null
     ls -t "$base"/logs/zelda-*-jogo.txt.gz 2>/dev/null | tail -n +31 | xargs -r rm -f
 fi
 exit $codigo

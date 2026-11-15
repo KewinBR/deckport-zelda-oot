@@ -4,10 +4,22 @@
 # v2.1.0: a saída aceita qualquer tamanho ("<largura>x<altura>", HOS_OUTPUT_RES=1424x800), mas só no modo dock; aqui o
 #   HOS_OUTPUT_RES vale também no perfil portátil. ATENÇÃO: o "5" antigo virou 5120x2880 na v2.1.0.
 # v2.0.12: acrescentava o modo 5 (1424x800) à tabela, valendo no portátil (HOS_OUTPUT_RES=5).
-# Uso: python3 patch_800p.py <raiz do Hookshot do builder, ex. appimg-210/squashfs-root/usr/share/hookshot>
+# Longshot v3.0.0: a mesma regra (só no modo dock), escrita com a variável chosen.
+# Uso: python3 patch_800p.py <raiz do builder, ex. appimg-210/squashfs-root/usr/share/hookshot ou .../usr/share/longshot>
 import sys, os
 p = os.path.join(sys.argv[1], 'host', 'nn_applet.c')
 s = open(p).read()
+if '(Deckport: HOS_OUTPUT_RES in the handheld profile too' in s or 'Steam Deck, Deckport' in s:
+    print('ja aplicado')
+    sys.exit(0)
+
+ls = '        if (!handheld() && chosen) hos_output_parse(e ? e : text, &output_w, &output_h);'
+if ls in s:   # (Longshot v3.0.0: o mesmo teste, com a escolha lida antes)
+    s = s.replace(ls, '        /* (Deckport: HOS_OUTPUT_RES in the handheld profile too, the Deck\'s 1424x800) */\n'
+                      '        if ((!handheld() || e) && chosen) hos_output_parse(e ? e : text, &output_w, &output_h);', 1)
+    open(p, 'w').write(s)
+    print('ok (Longshot)')
+    sys.exit(0)
 
 new = '        if (!handheld() && (e || ini_text("output_res", text, sizeof text))) hos_output_parse(e ? e : text, &output_w, &output_h);'
 if new in s:   # (v2.1.0 em diante)

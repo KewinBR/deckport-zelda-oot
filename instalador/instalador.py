@@ -51,6 +51,12 @@ def registrar_fontes():
         subprocess.run(["fc-cache", "-f", str(destino)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def mesmo_disco(a: Path, b: Path) -> bool:
+    try:
+        return os.stat(a).st_dev == os.stat(b).st_dev
+    except OSError:
+        return False
+
 def gb(n: int) -> str:
     return f"{n / 1024 ** 3:.1f}".replace(".", "," if T.lang == "pt" else ".") + " GB"
 
@@ -242,7 +248,7 @@ class App:
             self.jogos = nucleo.procurar_jogos()
         if DEMO and not self.jogos:
             self.jogos = [nucleo.Jogo(Path("/run/media/deck/SD/zelda/Zelda Ocarina of Time.nup"), 25622267860, "nup"),
-                          nucleo.Jogo(Path.home() / "Games" / "Hookshot", 0, "pasta", "v2.1.0")]
+                          nucleo.Jogo(Path.home() / "Games" / "Hookshot", 0, "pasta", "Hookshot v2.2.0-rc.1")]
         y = 370
         self.texto(56, 318, T("jogo_achei") if self.jogos else T("jogo_nada"), "reg22", "#cdcbc4", largura=900)
         if self.jogos and not any(j.marcado for j in self.jogos[:2]):
@@ -258,8 +264,8 @@ class App:
                 sub = f"{T('tipo_nup')}   •   {gb(j.tamanho)}   •   {j.local}"
                 nome = j.caminho.name
             else:
-                serve = j.versao.startswith(nucleo.HOOKSHOT_VERSAO)
-                sub = f"{T('tipo_pasta')} {j.versao}" + ("" if serve else f"   •   {T('pasta_versao_errada')}")
+                nota = "" if j.serve else T("pasta_refazer") if j.refazer or DEMO else T("pasta_versao_errada")
+                sub = f"{T('tipo_pasta')} {j.versao}" + (f"   •   {nota}" if nota else "")
                 nome = j.local
             def escolher(j=j):
                 for o in self.jogos:
@@ -302,16 +308,17 @@ class App:
         self.jogo = next((j for j in self.jogos if j.marcado), None)
         if not self.jogo:
             return
-        if self.jogo.tipo == "pasta" and not self.jogo.versao.startswith(nucleo.HOOKSHOT_VERSAO):
+        if self.jogo.tipo == "pasta" and not (self.jogo.serve or self.jogo.refazer or DEMO):
             return
         self.mostrar("local")
 
     def tela_local(self):
         self.limpar("fundo-passos")
         self.cabeca(2, T("local_titulo"))
-        so_port = self.jogo is not None and self.jogo.tipo == "pasta"
-        precisa = nucleo.ESPACO_SO_PORT if so_port else nucleo.ESPACO_MONTAR
-        self.texto(56, 318, T("local_texto_pasta") if so_port else T("local_texto"), "reg22", "#cdcbc4", largura=900)
+        so_port = self.jogo is not None and self.jogo.serve
+        refazer = self.jogo is not None and self.jogo.tipo == "pasta" and not so_port
+        texto = T("local_texto_pasta") if so_port else T("local_texto_refazer") if refazer else T("local_texto")
+        self.texto(56, 318, texto, "reg22", "#cdcbc4", largura=900)
         if not self.lugares:
             self.lugares = nucleo.locais() if not DEMO else [
                 nucleo.Local("ssd", Path.home(), 212 * 1024 ** 3, False),
@@ -320,6 +327,12 @@ class App:
         for i, l in enumerate(self.lugares[:3]):
             nome = T("sd") if l.sd else T("ssd")
             sub = f"{T('sd_sub') if l.sd else T('ssd_sub')}   •   {gb(l.livre)} {T('livres')}"
+            if so_port:
+                precisa = nucleo.ESPACO_SO_PORT
+            elif refazer and mesmo_disco(self.jogo.caminho, l.raiz):   # o romfs vira link
+                precisa = nucleo.ESPACO_REFAZER
+            else:
+                precisa = nucleo.ESPACO_MONTAR
             cabe = l.livre >= precisa
             def escolher(l=l, cabe=cabe):
                 if cabe:
@@ -452,8 +465,8 @@ def prints(app: App, pasta: Path):
             app.mostrar("instalando")
             app.atualizar_progresso()
         else:
-            app.erro = ("a montagem do jogo pelo Hookshot falhou (1): sem espaço" if T.lang == "pt" else
-                        "the Hookshot build of the game failed (1): no space left")
+            app.erro = ("a montagem do jogo pelo Longshot falhou (1): sem espaço" if T.lang == "pt" else
+                        "the Longshot build of the game failed (1): no space left")
             app.mostrar(seq[i])
         app.root.after(900, lambda: tirar(i + 1))
     app.root.after(1200, tirar)
