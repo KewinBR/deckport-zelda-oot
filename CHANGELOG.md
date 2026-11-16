@@ -1,5 +1,18 @@
 # Mudanças
 
+## v0.1.2 (versão de teste)
+
+- Base nova: Longshot v3.0.0-rc.5, uma versão candidata (a v0.1.1 usava uma nightly). As cinco correções que a v0.1.1
+  levava no patch já vêm nela, então o patch do port agora só tem as alterações do Deck.
+- O que o rc.5 traz para o Deck: abrir pelo Modo de Jogo não compila de novo os pipelines que a montagem já preparou; o
+  render thread não trava mais de 30 a 40 ms no mercado de Hyrule; GPUs integradas mantêm as texturas grandes
+  comprimidas, e o orçamento de memória de vídeo segue a placa; a trava de 30 fps fica mais regular.
+- Página de controles do menu com os ícones do Steam Deck: as linhas do L1, R1, R2 e do direcional apontavam para os
+  botões do controle Pro. O Longshot só refazia duas das cinco texturas de linhas da página; o patch refaz as cinco, e
+  todas as linhas terminam nos botões do Deck.
+- Quem tem a v0.1.1 recebe esta versão sozinho: o jogo é montado de novo com a base nova, com o jogo fechado e o Deck na
+  tomada.
+
 ## v0.1.1 (versão de teste)
 
 - Base nova: Longshot nightly-189 (aa95d35f). O builder dele compila o renderizador na montagem, então o instalador

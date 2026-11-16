@@ -10,7 +10,13 @@ done
 nice -n 15 docker run --rm -v ${ARVORE:-$HOME/zelda-oot/ls-220}:/src -v $HOME/zelda-oot/src:$HOME/zelda-oot/src -w /src -e HOME=/tmp deckport-build:noble bash -c "
 set -e
 bash scripts/linux/deps.sh
-export EMSDK=/src/build-linux/deps/emsdk RX_CPM=/src/build-linux/deps/cpm
+if [ -f builder/linux/linux_tools.py ]; then
+  # (Longshot rc.5 em diante: as ferramentas vêm do tools.lock, baixadas pelo linux_tools.py, que exporta EMSDK, RX_CPM etc.)
+  export LONGSHOT_BUILDER_HOME=/src/build-linux/builder-home
+  eval \"\$(/src/build-linux/deps/python/bin/python3 -I builder/linux/linux_tools.py env --install)\"
+else
+  export EMSDK=/src/build-linux/deps/emsdk RX_CPM=/src/build-linux/deps/cpm
+fi
 OOT_WORK=/src/build-linux/vk-work RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 /src/build-linux/deps/python/bin/python3 -I nx2/build.py --standalone --jobs 6
 ls -la /src/build-linux/vk-work/sa/build/longshot_vk.so
 chown -R $(id -u):$(id -g) /src/build-linux

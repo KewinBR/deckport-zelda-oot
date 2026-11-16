@@ -32,7 +32,7 @@ de mexer aqui.
 ## Instalador
 
 Tk, tela cheia 1280x800, controle e toque, no molde do `deckport-infamous-ss`. `instalador/nucleo.py` faz o trabalho:
-baixa o builder do Longshot (`BASE_VERSAO`, hoje a nightly-189; tenta o git.magicbean.dev e depois o anexo do nosso
+baixa o builder do Longshot (`BASE_VERSAO`, hoje a v3.0.0-rc.5; tenta o git.magicbean.dev e depois o anexo do nosso
 release, porque as nightlies somem; soma SHA-256 conferida), extrai, aplica o `patch_800p.py` e o
 `patches/deckport-longshot-<base>.patch` nas fontes dele, e monta o jogo a partir do `.nup` (ou de uma pasta de outra
 versão, por `--romfs` e `--exefs`). Desde a nightly 18x o builder compila o renderizador na montagem (commit 25726217),
@@ -43,7 +43,7 @@ compilação que o Longshot baixa ficam em `~/.local/share/zelda-oot-deck/longsh
 Prévia no PC: `DEMO=1 PRINTS=<pasta> python instalador/instalador.py`.
 
 O patch do renderizador é feito no `steam-deck` (árvore do Longshot na VPS, `build-vk-ls.sh` com `ARVORE=` para
-conferir que compila) e entra aqui pelo `ferramentas/sincronizar.sh`. Trocar a base: o patch novo sobre a nightly
+conferir que compila) e entra aqui pelo `ferramentas/sincronizar.sh`. Trocar a base: o patch novo sobre a versão
 nova, `BASE_*` em `nucleo.py`, e o AppImage da base como anexo do release (o espelho).
 
 ## Atualização automática (desde a v0.1.1)

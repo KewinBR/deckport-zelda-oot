@@ -38,15 +38,14 @@ APPDIR = Path.home() / ".local" / "share" / APP
 
 # A base: o Longshot, a continuação do Hookshot (git.magicbean.dev/MagicBeanDev/Longshot, GPL-3). Desde a nightly 18x o
 # builder compila o renderizador na montagem, com as fontes que carrega (sem .so pronto, commit 25726217): o patch do
-# port (patches/BASE_PATCH: as alterações do Deck e as correções do Longshot que vieram depois daquela nightly) é aplicado
-# nessas fontes, e a montagem já sai com o renderizador do port e os shaders preparados com ele. (O Hookshot saiu do
-# GitHub em 2026-11-13.)
+# port (patches/BASE_PATCH: as alterações do Deck) é aplicado nessas fontes, e a montagem já sai com o renderizador do
+# port e os shaders preparados com ele. (O Hookshot saiu do GitHub em 2026-11-13.)
 BASE_NOME = "Longshot"
-BASE_VERSAO = "nightly-189-aa95d35f"
+BASE_VERSAO = "v3.0.0-rc.5"
 BASE_ARQUIVO = f"Longshot-{BASE_VERSAO}-x86_64.AppImage"
 BASE_URL = f"https://git.magicbean.dev/MagicBeanDev/Longshot/releases/download/{BASE_VERSAO}/{BASE_ARQUIVO}"
-BASE_SHA256 = "91e0431ae45c87c700572aa80943f7395bbe57c77fbfb946542bb5f4d5bab787"
-BASE_BYTES = 99478008
+BASE_SHA256 = "0912757a0b8e368e82c4825088e3fead91ddb3b1eb139a40d2db9aa57ff84bf9"
+BASE_BYTES = 99600888
 BASE_PATCH = f"deckport-longshot-{BASE_VERSAO}.patch"
 # (a pasta do jogo montada pelo port guarda a identidade da base com que foi montada: a versão do Longshot e a soma do
 # patch. Mudou qualquer um dos dois, ela é montada de novo)
@@ -70,7 +69,7 @@ def urls_da_base(pacote: Path | None = None) -> list[str]:
 
 
 def identidade_base(pacote: Path | None = None) -> str:
-    """'Longshot nightly-189-aa95d35f + 1a2b3c4d5e6f': a base e a soma do patch do port sobre ela."""
+    """'Longshot v3.0.0-rc.5 + 1a2b3c4d5e6f': a base e a soma do patch do port sobre ela."""
     try:
         sha = hashlib.sha256(((pacote or PACOTE) / "patches" / BASE_PATCH).read_bytes()).hexdigest()[:12]
     except OSError:

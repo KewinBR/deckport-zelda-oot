@@ -61,7 +61,7 @@ is downloaded.
    curl -L https://github.com/KewinBR/deckport-zelda-oot/releases/latest/download/instalar.sh | bash
    ```
 3. The installer finds the `.nup` on the Deck and the SD card, asks where to install and does the rest: it downloads
-   the official Longshot (nightly-189, with its SHA-256 checked), applies the port's changes to it, builds the game
+   the official Longshot (v3.0.0-rc.5, with its SHA-256 checked), applies the port's changes to it, builds the game
    (the port's renderer is compiled along with it), generates the Deck's textures and vegetation, and creates the
    Steam shortcut.
 4. Go back to Game Mode and launch it from your library.
@@ -101,10 +101,8 @@ Longshot (and Hookshot before it) does the heavy lifting: recompiling the game, 
 with Vulkan. The Deck button icons are also its work. Deckport changes the renderer for the Deck and adds the launcher,
 the mods generated from your copy of the game, the menu, the installer and automatic updates.
 
-The changes are in [patches/](patches/). `deckport-longshot-nightly-189-aa95d35f.patch` is the whole difference on top
-of Longshot nightly-189's sources: the Deck changes plus five Longshot fixes that came out after it (memory given back
-when Linux runs short, large shaders that were left out, the late pages fix and the mesh shader fallback path). The
-installer applies this patch and `patch_800p.py` (the 1424x800 output in the handheld profile too) to the builder's
+The changes are in [patches/](patches/). `deckport-longshot-v3.0.0-rc.5.patch` is the whole difference on top
+of Longshot v3.0.0-rc.5's sources: the Deck changes. The installer applies this patch and `patch_800p.py` (the 1424x800 output in the handheld profile too) to the builder's
 sources before building.
 
 ## Credits and license

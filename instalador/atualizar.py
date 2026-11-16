@@ -57,7 +57,7 @@ def gravar_estado(e: dict) -> None:
 
 
 def base_do_pacote(pacote: Path) -> str:
-    """A identidade da base do pacote ('Longshot nightly-189-aa95d35f + <soma do patch>'), pelo código dele (que é de
+    """A identidade da base do pacote ('Longshot v3.0.0-rc.5 + <soma do patch>'), pelo código dele (que é de
     outra versão: roda à parte)."""
     r = subprocess.run([sys.executable, "-I", "-c",
                         "import sys; sys.path.insert(0, sys.argv[1]); import nucleo; print(nucleo.identidade_base())",
