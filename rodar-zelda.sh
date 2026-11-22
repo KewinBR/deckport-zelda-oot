@@ -20,8 +20,16 @@ scripts=${ZELDA_SCRIPTS:-$HOME/steam-deck/scripts}
 # v2.2.0-rc.1 (game-220, 2026-11-13): Hookshot 2.2 com os patches Deckport (patches/deckport-220.patch, build-vk-220.sh).
 # No rancho (A/B de 2 rodadas cada): fps igual ou melhor (p10 21 contra 17-20), GTT 400 MB menor. game-210 fica de
 # reserva: ZELDA_JOGO=$base/game-210.
-jogo=${ZELDA_JOGO:-$base/game-220}
-[[ -z ${ZELDA_JOGO:-} && ! -f $jogo/image.bin ]] && jogo=$base/game-210
+# v0.1.2 do port público (game-012, 2026-11-16): Longshot v3.0.0-rc.5 com o patch Deckport, montada pelo instalador
+# e posta aqui. Saves em ~/.local/share/longshot (cópia dos do Hookshot). game-220 fica de reserva:
+# ZELDA_JOGO=$base/game-220, com o lançador antigo em rodar-zelda.sh.antes-012.
+# v0.1.3 de teste (game-013, 2026-11-17): Longshot v3.0.0-rc.7 com o patch Deckport. Volta: ZELDA_JOGO=$base/game-012.
+# Teste do Kewin (game-pgo, 2026-11-19): main do Longshot em 9d3de2d9 (#1662 e #1663) com o patch Deckport, as 800
+# funções mais quentes das pedras em -O2 e o perfil de jogo gravado no Deck (patches/deckport-longshot-9d3de2d9.patch).
+# Nas pedras de Death Mountain, 31,5 fps contra 17,5 do game-013. Volta: ZELDA_JOGO=$base/game-013.
+jogo=${ZELDA_JOGO:-$base/game-pgo}
+[[ -z ${ZELDA_JOGO:-} && ! -x $jogo/bin/longshot ]] && jogo=$base/game-013
+[[ -z ${ZELDA_JOGO:-} && ! -f $jogo/image.bin ]] && jogo=$base/game-220
 # Longshot (a continuação do Hookshot; 2026-11-15, a base da versão pública): os arquivos trocam hookshot por longshot no
 # nome (bin/longshot, longshot_log.txt, longshot_options.ini, longshot_vk.so, saves em ~/.local/share/longshot).
 hs=hookshot; [[ -f $jogo/longshot_version.txt ]] && hs=longshot
@@ -199,8 +207,10 @@ export RX_VK_CHECKPOINTS=${RX_VK_CHECKPOINTS:-1}
 # Folhas e grama brancas por um quadro e HUD embaralhado: a GPU lê os dados do quadro na memória do jogo enquanto o jogo
 # já os reescreve (valentas, issue 1000 do Hookshot). O espelho de VRAM dá à GPU uma cópia. No rancho, girando a câmera,
 # o contador AFLASH foi de 2.339 para 618 e o fps não caiu. O teste foi com 1024 MB de espelho (com os 256 de antes não
-# foi medido), e a memória livre mais o swap livre ficaram iguais aos do teste sem espelho. RX_VK_MIRROR=0 volta.
-export RX_VK_MIRROR=${RX_VK_MIRROR:-1}
+# foi medido), e a memória livre mais o swap livre ficaram iguais aos do teste sem espelho.
+# 2026-11-18, v0.1.3 (rc.7): sem espelho o fps em Kokiri foi de 35 para 43 (p10 de 28 para 32, duas rodadas cada), e o
+# Kewin não vê mais as piscadas há tempos. Sai por padrão, pra ele testar jogando. RX_VK_MIRROR=1 volta o espelho.
+export RX_VK_MIRROR=${RX_VK_MIRROR:-0}
 [ "$RX_VK_MIRROR" = 1 ] && export RX_VK_MIRROR_MB=${mirror_fora:-512}   # (512: 22 piscadas por 1000 jogando, não pior que 1024)
 # A v2.1.0 faz a CPU esperar pelos resultados que a GPU escreve (#1375 do Hookshot). Sem a espera o jogo os lê com um
 # quadro de atraso, como a v2.0.14 fazia: no rancho, parado, 23,7 fps viraram 25,1 e 28,9. RX_VK_NO_READBACK_WAIT=0 volta.
@@ -220,7 +230,10 @@ fi
 # (patches/deckport-longshot-*.patch). Ele lê e grava longshot_options.ini e guarda os caches em cache/. O ini vira um link
 # pro hookshot_options.ini, que o executável e o menu do port continuam lendo. No Deck os espelhos esparsos dele derrubam o
 # fps (20 contra 30 em Kokiri, com o limite de 512 MB): RX_VK_MIRROR_SPARSE=0. A thread de gravação (RX_VK_RECORDER=thread
-# com RECORDER_OWN=1 e RECORDER_IDLE=wait) empatou em 3 rodadas: fica desligada. A correção das páginas atrasadas
+# com RECORDER_OWN=1 e RECORDER_IDLE=wait) empatou em 3 rodadas em Kokiri com o espelho ligado. 2026-11-18, sem espelho, no
+# ponto pesado do campo de Hyrule (save do Kewin, ~2600 draws): base 30,1 e 26,2 fps (p10 27,7 e 25,1, 433 e 412 quadros
+# acima de 50 ms); com a thread 33,6 e 33,8 (p10 28,5 e 29,0, 277 e 319). A gravação em paralelo (RX_VK_PARALLEL=3 e 6)
+# subiu a mediana mas piorou o p10 e dobrou os engasgos. A thread passa a vir ligada; ZELDA_GRAVADOR=0 desliga. A correção das páginas atrasadas
 # (RX_VK_LATE_FIX) também sai: sem ela, 3 rodadas em Kokiri deram 14.338 quadros (o nosso renderizador 13.295, o Longshot
 # com ela 13.755), metade dos quadros acima de 50 ms e piscadas como as do nosso (10 por mil); a espera seletiva
 # (RX_VK_READBACK_SKIP, nosso patch) já cuida dessas leituras. ZELDA_LONGSHOT_AJUSTES=0 deixa como vem.
@@ -233,6 +246,9 @@ if grep -q longshot_options.ini "$vk" 2>/dev/null; then
     fi
     if [[ ${ZELDA_LONGSHOT_AJUSTES:-1} == 1 ]]; then
         export RX_VK_MIRROR_SPARSE=${RX_VK_MIRROR_SPARSE:-0} RX_VK_LATE_FIX=${RX_VK_LATE_FIX:-0}
+        if [[ ${ZELDA_GRAVADOR:-1} == 1 ]]; then
+            export RX_VK_RECORDER=${RX_VK_RECORDER:-thread} RX_VK_RECORDER_OWN=${RX_VK_RECORDER_OWN:-1}                    RX_VK_RECORDER_IDLE=${RX_VK_RECORDER_IDLE:-wait}
+        fi
         # (2026-11-14, primeira jogatina: no modo jogo a tela de abertura dele trava na frente do jogo, "the window is not
         # being shown"; o jogo roda por trás a 60 fps no título, com música. Sem a tela de abertura, por enquanto)
         export RX_VK_STARTUP_SCREEN=${RX_VK_STARTUP_SCREEN:-0}
@@ -241,6 +257,9 @@ if grep -q longshot_options.ini "$vk" 2>/dev/null; then
 fi
 # Dados de cada sessão para análise: o contador de piscadas no log do jogo (uma linha a cada 600 quadros).
 export RX_VK_AFLASH=${RX_VK_AFLASH:-1}
+# Descompactação dos arquivos do jogo pela libzstd do Linux, não pelo código traduzido do Switch: telas de carregamento
+# cerca de 10% mais curtas e um núcleo livre nas trocas de área (Longshot #1402, padrão depois do rc.7). =0 volta.
+export HOS_NATIVE_ZSTD=${HOS_NATIVE_ZSTD:-1} HOS_NATIVE_ZSTD_FRAMES=${HOS_NATIVE_ZSTD_FRAMES:-1}
 # Controle remoto pra teste (não atrapalha o controle de verdade).
 export HOS_INPUT_LIVE=${HOS_INPUT_LIVE:-/tmp/zelda-pad.txt}
 : > "$HOS_INPUT_LIVE"

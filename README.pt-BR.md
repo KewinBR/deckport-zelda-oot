@@ -17,8 +17,8 @@ nada do jogo é baixado.
 
 ## O que funciona
 
-- Jogo jogável no Steam Deck LCD, de 20 a 30 fps na maior parte das áreas testadas (Floresta Kokiri, campo, rancho
-  Lon Lon, cidade do castelo, Kakariko).
+- Jogo jogável no Steam Deck LCD do começo ao fim: o autor zerou o jogo com o build desta versão. Nas medições, perto
+  dos 30 fps do jogo no campo e nas pedras de Death Mountain, e 38 fps na Floresta Kokiri.
 - Tela cheia em 16:10, na resolução do Deck.
 - Ícones de botão do Steam Deck nos textos e menus do jogo.
 - Menu do port no estilo do jogo, com predefinições e opções de textura, distância da vegetação, grama e sombra.
@@ -36,7 +36,8 @@ nada do jogo é baixado.
 - **Névoa errada** em algumas áreas, como o mercado da cidade do castelo.
 - **A tela de abertura do port está desligada nesta versão.** Com o renderizador do Longshot ela travava na frente do
   jogo no Modo de Jogo, e o jogo agora abre direto no título.
-- **Só o começo do jogo foi testado.** Outros donos de Deck relatam travadas da GPU em áreas mais adiante.
+- **Zerado num Deck só.** O jogo foi do começo ao fim no Deck LCD do autor. Outros donos de Deck relataram travadas da
+  GPU em áreas mais adiante com versões anteriores.
 - A montagem do jogo no próprio Deck leva de uma a duas horas. Ela compila o renderizador do port e já prepara os
   shaders com ele, então a primeira abertura não repete esse trabalho.
 - **A montagem a partir do `.nup` usa o código do próprio Longshot**, e o instalador ainda não a fez do começo ao fim
@@ -61,7 +62,7 @@ nada do jogo é baixado.
    curl -L https://github.com/KewinBR/deckport-zelda-oot/releases/latest/download/instalar.sh | bash
    ```
 3. O instalador acha o `.nup` no Deck e no cartão SD, pergunta onde instalar e faz o resto: baixa o Longshot oficial
-   (a v3.0.0-rc.5, com a soma SHA-256 conferida), aplica nele as alterações do port, monta o jogo (o renderizador do
+   (a v3.0.0-rc.7, com a soma SHA-256 conferida), aplica nele as alterações do port, monta o jogo (o renderizador do
    port é compilado junto), gera as texturas e a vegetação do Deck e cria o atalho na Steam.
 4. Volte ao Modo de Jogo e abra pela biblioteca.
 
@@ -100,9 +101,12 @@ O Longshot (e antes dele o Hookshot) faz o trabalho pesado: recompilar o jogo, t
 Vulkan. Os ícones de botão do Deck também são dele. O Deckport altera o renderizador para o Deck e acrescenta o
 lançador, os mods gerados a partir da sua cópia do jogo, o menu, o instalador e a atualização automática.
 
-As alterações estão em [patches/](patches/). `deckport-longshot-v3.0.0-rc.5.patch` é a diferença inteira sobre
-as fontes da v3.0.0-rc.5 do Longshot: as alterações do Deck. O instalador aplica esse patch e o `patch_800p.py` (a saída de 1424x800 também
-no perfil portátil) nas fontes do builder antes de montar.
+As alterações estão em [patches/](patches/). `deckport-longshot-v3.0.0-rc.7.patch` é a diferença inteira sobre
+as fontes da v3.0.0-rc.7 do Longshot: duas correções do Longshot que saíram depois do rc.7 (#1662 e #1663) e as
+alterações do Deck. O instalador aplica esse patch nas fontes do builder antes de montar e põe em `work/` o perfil do
+Deck, que está em [perfil/](perfil/): a lista das 800 funções do jogo que mais pesam (compiladas em -O2), a ordem delas
+no executável e o perfil de jogo (PGO) tirado de rodadas no Deck. São listas de endereços e contagens, sem código do
+jogo. O `patch_800p.py` (saída de 1424x800 no perfil portátil) não é mais aplicado desde a v0.1.3, mas continua lá.
 
 ## Créditos e licença
 

@@ -10,7 +10,7 @@ pkg=$dist/zelda-oot-deck
 rm -rf "$pkg"; mkdir -p "$pkg"
 # (desde a v0.1.1 o renderizador não vai pronto: o builder do Longshot o compila na montagem, das fontes com o patch do
 # port, patches/deckport-longshot-<base>.patch)
-cp -r "$raiz/instalador" "$raiz/deck" "$raiz/arte" "$raiz/patches" "$pkg/"
+cp -r "$raiz/instalador" "$raiz/deck" "$raiz/arte" "$raiz/patches" "$raiz/perfil" "$pkg/"
 cp "$raiz/rodar-zelda.sh" "$raiz/instalar.sh" "$raiz/LICENSE" "$raiz/README.md" "$raiz/README.pt-BR.md" "$pkg/"
 rm -rf "$pkg/instalador/__pycache__"
 echo "$versao" > "$pkg/VERSAO"

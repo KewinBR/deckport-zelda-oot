@@ -1,0 +1,3062 @@
+diff --git a/gpu/vk/switches.def b/gpu/vk/switches.def
+index 6e6fa621..bf9e1da7 100644
+--- a/gpu/vk/switches.def
++++ b/gpu/vk/switches.def
+@@ -10,6 +10,8 @@ SW(RX_NVN_WATCH_ALL, diag, bool, "off: the Resource Memory thread's writes are n
+ SW(RX_NVN_WATCH_TEX, diag, string, "off", "Page-watches the storage of textures of the given <w>x<h> size and logs who writes it, with call stacks.")
+ SW(RX_NVN_WATCH_TEXELS_SRC, diag, string, "off", "Page-watches the source data of WriteTexels uploads into textures of the given <w>x<h> size and logs later writes to it.")
+ SW(RX_VK_9E5_SWAP, diag, bool, "off", "Swaps R and B in sampled views of RGB9E5 textures, for diagnosing a colour-order fault.")
++SW(RX_VK_AFLASH, diag, bool, "off", "(Deckport) Logs the exposure meter readbacks and the frames whose brightness jumps (the white flashes).")
++SW(RX_VK_AFLASH_DUMP, diag, string, "unset: no images", "(Deckport) With RX_VK_AFLASH, a folder where the frames around each flash are written.")
+ SW(RX_VK_ALLOWED_AT_COUNT, kill, bool, "on: an allowance equal to the count once past it is taken as a tenth under the count", "=0 takes the driver's VRAM allowance as reported, even when it just follows the process's use.")
+ SW(RX_VK_ALL_COMPONENTS, kill, bool, "colour write mask limited to the components the fragment shader writes", "1 turns off the amd-fix that masks out colour components the fragment shader does not write.")
+ SW(RX_VK_ALL_GLOBAL_PROGS, diag, string, "unset: none", "Comma list of compute program key prefixes none of whose memory accesses are bound to a descriptor (a test).")
+@@ -42,6 +44,7 @@ SW(RX_VK_BC_POOL, attempt, bool, "off: the BC scratch images each get a dedicate
+ SW(RX_VK_BC_STORAGE, kill, bool, "on: compressed images get STORAGE usage when the raw format supports it", "=0 makes block-compressed images without storage usage, as before v2.0.8 on AMD, so the game's BC encoders do not run there.")
+ SW(RX_VK_BENCH, diag, string, "no benchmark", "Replays the frame at the given present repeatedly (<present>[,<times>], 50 times) to time it.")
+ SW(RX_VK_BG_IMPORT, attempt, bool, "off: pools are imported by chunk at first use", "1 imports every pool the game makes eagerly on a background thread.")
++SW(RX_VK_BIND_SNAPSHOT_KB, tune, int, "the Deckport default size", "(Deckport) Largest buffer binding, in KiB, whose contents a draw snapshots instead of reading in place.")
+ SW(RX_VK_BLOCK_BUFFERS, kill, bool, "off: buffers asked as dedicated get a memory object of their own", "Puts buffers asked as dedicated into VMA's shared blocks instead, as before.")
+ SW(RX_VK_BLOCK_PROBE, diag, bool, "off (512-byte miss-log slices)", "Set, counts entries into each IR block of the probed programs (16 KB slices) and writes them in the stats dump.")
+ SW(RX_VK_BUDGET_BY_BLOCKS, kill, bool, "off: the budget's excess is measured less the free space in VMA's blocks", "Measures VRAM pressure by the allocator's blocks alone, as before, and turns off the compaction's hold line.")
+@@ -79,10 +82,16 @@ SW(RX_VK_CPU_OVER_GPU, attempt, bool, "off: CPU writes are taken over GPU conten
+ SW(RX_VK_DEAD_EVERY, tune, int, "1 present", "Sets how often, in presents, dead transient render targets are looked for.")
+ SW(RX_VK_DEAD_MIN_UNUSED, tune, int, "1 present (3 before)", "Sets how many presents a dead transient render target must go unused before it is let go.")
+ SW(RX_VK_DEAD_TARGETS, kill, bool, "on: dead transient render targets are let go between eviction passes", "=0 leaves dead transient render targets for the 600-present sweep or the budget, as before.")
++SW(RX_VK_DECKPORT_MENU, kill, bool, "on: the Insert menu has the Deckport tab", "(Deckport) =0 leaves the Deckport tab out of the Insert menu.")
++SW(RX_VK_DECKPORT_SHADERS, kill, bool, "on: a shaders badge shows while pipelines are made", "(Deckport) =0 leaves out the badge in the bottom left corner that shows while shaders are translated or pipelines made.")
++SW(RX_VK_DECKPORT_STARTUP, kill, bool, "on: the start-up screen shows the Deckport logo", "(Deckport) =0 shows the plain start-up screen.")
+ SW(RX_VK_DEFERRED_LATE, kill, bool, "off: deferred binds use the ranges copied at the submit", "=1 reads deferred buffer binds from the game's arrays at the replay, the old way that misplaced MKW terrain.")
++SW(RX_VK_DEPTH_ZERO, kill, bool, "on: depth targets the game never clears start at zero", "(Deckport) =0 leaves them as the driver gives them.")
+ SW(RX_VK_DESC_COUNTS, kill, bool, "on: a program's descriptor counts are taken once and kept", "=0 counts the program's descriptors again before every descriptor build, as before.")
+ SW(RX_VK_DESC_POOL_DIV, tune, int, "1 (8192 sets, full-size pools)", "Makes each recording's descriptor pool an n-th (1 to 32) of its size, for the memory the driver keeps.")
+ SW(RX_VK_DESC_REUSE, player, enum, "the Descriptor reuse menu row / descriptor_reuse in longshot_options.ini; On (level 2) with no line", "Overrides the Descriptor reuse row for a run: 0 its Off, 1 its On, never: every draw builds its own descriptors.")
++GONE(RX_VK_DESC_REUSE_DGEN, "2026-11-11", "it does nothing")
++GONE(RX_VK_DESC_SLOTGEN, "2026-11-11", "use RX_VK_DESC_REUSE (the same 0 and 1) or the Descriptor reuse row")
+ SW(RX_VK_DEVICE, player, int, "unset: the menu's GPU device row, else the best-scored GPU", "Picks the graphics card by its index in the log, over the menu's GPU device.")
+ SW(RX_VK_DLSS, player, enum, "the Insert menu's Upscaler row", "0 never DLSS (NGX's extensions not enabled), 1 DLSS, 2 DLAA, over the Upscaler row for one run.")
+ SW(RX_VK_DLSS_ACTORS, kill, bool, "on: skinned actors' motion vectors made for the temporal upscalers", "=0 turns off per-actor motion vectors for DLSS, FSR 4, XeSS and frame generation.")
+@@ -103,6 +112,7 @@ SW(RX_VK_DLSS_LOG, diag, bool, "off (NGX writes its own log files only)", "1 sen
+ SW(RX_VK_DLSS_PRESET, player, string, "the DLSS model row's preset (K, or E under 7 GB of VRAM)", "A preset letter (or 0 for NVIDIA's default) over the DLSS model menu row for one run.")
+ SW(RX_VK_DLSS_TRACE, diag, int, "0: off", "Every <n> frames, logs one frame's draws into scene-sized targets for the temporal upscaler's motion.")
+ SW(RX_VK_DMABUF_PIECE_MB, tune, int, "udmabuf's size limit from /sys (64 MB unless raised)", "Caps each dma-buf piece of a pool at n MB, to try the sparse multi-piece path with the kernel limit raised.")
++SW(RX_VK_DP_STARTUP_T, diag, float, "unset: the start-up screen follows the load", "(Deckport) Holds the start-up screen animation at that time, in seconds (screenshots).")
+ SW(RX_VK_DRAW_STATS, diag, string, "unset: no statistics", "Names a folder: one measured frame's per-draw statistics and the wanted programs' descriptors and buffers are written there.")
+ SW(RX_VK_DRAW_STATS_PROGS, diag, string, "no programs dumped", "A list of hex program keys whose uniform and storage buffers are dumped in hex with the frame statistics.")
+ SW(RX_VK_DREF_FROM_SAMPLER, kill, bool, "a comparing shader gets a comparing sampler", "1 keeps the old behaviour: the sampler compares only when the game's sampler asks for it.")
+@@ -159,6 +169,7 @@ SW(RX_VK_FLASH_RECORD, diag, string, "no draws recorded", "Records the draws of
+ SW(RX_VK_FLASH_REGION, diag, int, "0: off", "<level> also reports a 16x9 block whose mean brightness jumps by that level for one frame, while the picture moves.")
+ SW(RX_VK_FLUSH_UNCACHED, kill, bool, "off: texture write-backs read from cached host memory", "Reads texture write-backs from the uncached sequential-write staging memory, as before.")
+ SW(RX_VK_FOLLOW_GRAPHICS, kill, bool, "on (vertex and fragment stages follow global memory as the fallback)", "0 stops graphics stages following global memory accesses through the page table push block.")
++GONE(RX_VK_FOLLOW_MESH, "2026-11-11", "it does nothing")
+ SW(RX_VK_FOLLOW_STORES, attempt, bool, "off: only loads follow pointers through the page table", "1 lets shader writes and atomics follow pointers through the guest page table too.")
+ SW(RX_VK_FOOTPRINT, diag, string, "empty: no program changed", "Makes the listed programs' draws write depth wherever they rasterize, to show their footprint in dumps.")
+ SW(RX_VK_FOOTPRINT_LINES, diag, bool, "off", "Draws the RX_VK_FOOTPRINT programs as wireframes.")
+@@ -194,6 +205,7 @@ SW(RX_VK_GPU_CLOCK, hw, enum, "peak clock held on the Steam Deck's APU (Linux, A
+ SW(RX_VK_GPU_DUMP, diag, bool, "off", "In the statistics frame, also dumps the wanted programs' storage buffers as the GPU holds them after.")
+ SW(RX_VK_GPU_HANG_SEC, tune, int, "30 seconds", "Seconds of no GPU progress taken as a hang that ends the game; 0 only logs the stall.")
+ SW(RX_VK_GPU_PAGES, diag, bool, "off", "Notes the pages the GPU writes and counts mirror syncs that copy the CPU's version over them.")
++GONE(RX_VK_GPU_PROFILE, "2026-11-16", "use RX_VK_PASS_TIMING=1, which it was another name for")
+ SW(RX_VK_GPU_UNSWIZZLE, kill, bool, "on where the device has push descriptors", "=0 turns off unswizzling textures in a compute shader, leaving the CPU path.")
+ SW(RX_VK_GP_TEST, diag, int, "3: all of the global-pointer path (addressing model, page-table load, the loads and stores through it)", "Bisects the global memory pointer path: 1 the addressing model alone, 2 adds the table's load, 3 all of it.")
+ SW(RX_VK_HALF_RATE_SHADING, attempt, bool, "off: RADV_FORCE_VRS_CONFIG_FILE is dropped from the environment when it names an existing file", "=1 keeps RADV's forced-VRS variable so Steam's Half Rate Shading reaches the game.")
+@@ -288,6 +300,7 @@ SW(RX_VK_MESH_FIRST_WORD, tune, int, "1", "Picks which word of an indirect mesh
+ SW(RX_VK_MESH_IND_COUNT_WORD, tune, int, "0", "Picks which word (0-3) of an indirect mesh record holds the count for the conversion.")
+ SW(RX_VK_MESH_IND_RAW, kill, bool, "off: indirect mesh draws' records are converted to {count,1,1}", "Skips the conversion of indirect mesh draw arguments and uses them raw.")
+ SW(RX_VK_MESH_NOCULL, attempt, string, "empty: culling kept in every task shader", "Comma list of code key prefixes whose task shaders have their culling turned off, so every meshlet is drawn.")
++SW(RX_VK_MESH_NOCULL_GRID, kill, bool, "on: the culling grid fix (deckport-grid-2) in the program stamp", "(Deckport) =0 turns the grid fix off; it changes the program cache stamp.")
+ SW(RX_VK_MESH_NO_DEFAULTS, kill, bool, "off: unwritten components of a mesh program's generic outputs get defaults (0, and 1 for .w)", "Leaves unwritten components of mesh programs' generic outputs undefined, as before the fix.")
+ SW(RX_VK_MESH_NO_ZERO, kill, bool, "off: the mesh stage buffer's map and attribute regions are zeroed first", "Skips zeroing the mesh stage buffer's map and attribute regions, as before the fix.")
+ SW(RX_VK_MESH_OPT, hw, bool, "task/mesh programs built without the driver's optimizer on AMD cards unless the driver is RADV; with it els...", "1 builds task and mesh programs with the driver's optimizer on AMD too.")
+@@ -323,6 +336,7 @@ SW(RX_VK_NODEPTH, diag, bool, "off (depth test and write as the game asks)", "1
+ SW(RX_VK_NOOPT, attempt, bool, "off (driver optimizer on, but for AMD task/mesh programs and the mesh fallback)", "1 builds every pipeline in play without the driver's optimizer.")
+ SW(RX_VK_NO_A2C, kill, bool, "alpha-to-coverage as the game asks", "1 turns alpha-to-coverage off for every draw (the foliage's).")
+ SW(RX_VK_NO_CBUF_LOAD_RULE, kill, bool, "off: the rule is on (such an address is left to the run-time search)", "Turns off the rule that leaves a graphics stage's memory-derived address in a non-c0 constant buffer to the run-time search.")
++GONE(RX_VK_NO_DESC_REUSE, "2026-11-11", "use RX_VK_DESC_REUSE=never")
+ SW(RX_VK_NO_DISPATCH_ORDER, kill, bool, "off: a dispatch after other work gets a full barrier first", "Leaves out the full barrier that orders a dispatch after the work before it.")
+ SW(RX_VK_NO_DMABUF, kill, bool, "Linux, non-NVIDIA: guest memory imported as dma-bufs where udmabuf works; host pointers elsewhere", "Imports guest memory by host pointers only, never as dma-bufs.")
+ SW(RX_VK_NO_DRAWN_PAGE_MAP, kill, bool, "off: a virtual-pool texture's page mapping is noted when the GPU first writes it", "Stops noting a virtual-pool texture's page map at its first GPU write, as before.")
+@@ -343,6 +357,7 @@ SW(RX_VK_NO_INVARIANT, hw, bool, "positions invariant on every card but NVIDIA;
+ SW(RX_VK_NO_MESH, diag, enum, "0: every draw runs", "1 leaves out task/mesh draws, 2 leaves out all the others, to see what each draws.")
+ SW(RX_VK_NO_MESH_FALLBACK, kill, bool, "compute fallback used where the GPU has no mesh shaders (and for task+mesh draws where that rule is on)", "Turns off the compute fallback for task and mesh programs, both the no-mesh-shader one and the task+mesh one.")
+ SW(RX_VK_NO_MESH_WARNING, kill, bool, "warning shown once on a GPU with no mesh shaders and no fallback", "Suppresses the log line and message that the GPU has no mesh shaders and cannot draw foliage and effects.")
++GONE(RX_VK_NO_NAN_GUARD, "2026-11-11", "use RX_VK_NAN_GUARD=0")
+ SW(RX_VK_NO_PARTIAL, kill, bool, "off: only the dirty ranges of an uploaded texture are uploaded again", "Uploads a changed texture whole instead of only its dirty ranges (an A/B switch).")
+ SW(RX_VK_NO_PASS_HAZARDS, kill, bool, "off: read/write hazards inside an open pass are checked", "Turns off the check for draws that sample what the open pass writes.")
+ SW(RX_VK_NO_PREDICT, kill, bool, "off: predict_run builds the predicted pipelines when it is called", "Skips building the predicted pipelines in the preparation and removes its pending marker.")
+@@ -363,6 +378,10 @@ SW(RX_VK_OCC_DRY, diag, bool, "off", "Occlusion queries are made and read but th
+ SW(RX_VK_OCC_FIXED, attempt, int, "unset: real queries; the fallback fixed value is 4096", "Every samples-passed report reads this fixed value and real queries are off; -1 uses the per-draw count.")
+ SW(RX_VK_OCC_LOG, diag, bool, "off", "Logs occlusion query statistics about every 5,000 reports.")
+ SW(RX_VK_OCC_QUERIES, kill, int, "on (1) where the device can reset queries from the CPU", "=0 turns real occlusion queries off (every report reads 4096); =2 also counts runs with colour draws.")
++GONE(RX_VK_OOT, "2026-11-11", "it does nothing")
++GONE(RX_VK_OOT_EXPOSURE, "2026-11-11", "it does nothing")
++GONE(RX_VK_OOT_FOG, "2026-11-11", "it does nothing")
++GONE(RX_VK_OOT_VISUAL, "2026-11-11", "it does nothing")
+ SW(RX_VK_PACE, player, bool, "the Frame pacing row", "Turns frame pacing on or off for one run, over the Frame pacing row.")
+ SW(RX_VK_PARALLEL, attempt, int, "0: off, the replay records on one thread", "Number of threads (2-8) that record a command buffer's segments in parallel; 0 or 1 is off.")
+ SW(RX_VK_PARALLEL_SEG, tune, int, "160 draws and dispatches (minimum 32)", "Size of the segments a parallel replay splits a submission into.")
+@@ -429,8 +448,10 @@ SW(RX_VK_READBACK_EXACT, attempt, enum, "0: off", "1 reads every range after all
+ SW(RX_VK_READBACK_LATE, attempt, string, "unset: every readback waits for its write-back", "A list of rules (newest, sizes) naming readbacks read without their wait, a frame late.")
+ SW(RX_VK_READBACK_NO_CATCHUP, attempt, bool, "off: a readback catches the replay up or settles first", "=1 (A/B) skips the catch-up before a readback: recorded work only.")
+ SW(RX_VK_READBACK_OFF_FILE, diag, string, "unset: invalidate always writes GPU-written texels back", "<path>: while that file exists invalidate skips its texture write-back and catch-up (a live A/B).")
++SW(RX_VK_READBACK_ONLY, attempt, string, "unset: every readback waits", "(Deckport) Comma list of readback sizes: only those wait for their write-back.")
+ SW(RX_VK_READBACK_PART, kill, bool, "on: a readback waits for the part that writes its range", "=0 makes a readback wait for its submission's last part always, as before.")
+ SW(RX_VK_READBACK_SETTLE_ALWAYS, kill, bool, "off: a readback settles stopped queues only after a new CPU signal", "=1 makes every readback look at the stopped queues whenever anything is stopped, as before.")
++SW(RX_VK_READBACK_SKIP, attempt, string, "unset: every readback waits", "(Deckport) Comma list of readback sizes read without waiting for their write-back (the Deck launcher sets the culling ones).")
+ SW(RX_VK_READBACK_WAIT_MS, tune, int, "250 ms", "Longest a readback waits for its write-back's value before reading what memory holds; 0 is no limit.")
+ SW(RX_VK_RECORDER, player, enum, "the Threaded rendering row: thread where it resolves on, else off", "Chooses the command recorder for the run (sync, defer, thread; anything else off), over the Threaded rendering row.")
+ SW(RX_VK_RECORDER_IDLE, attempt, enum, "spin, then a condition variable", "wait: the idle recorder spins 20 us then waits on the ring's address (WaitOnAddress/futex) instead.")
+@@ -460,6 +481,7 @@ SW(RX_VK_SAMPLER_CACHE, player, bool, "the per-thread sampler table on; the para
+ SW(RX_VK_SEED_CHECK, diag, bool, "off (shader seed closed after the start)", "1 keeps the shader seed open and marks each program miss with the seed stages it holds.")
+ SW(RX_VK_SHADER_DIR, diag, string, "compiled-in built-in shaders", "Takes each built-in shader from <folder>/<name>.spv when that file is SPIR-V, logging each once.")
+ SW(RX_VK_SHADOW_BIAS, tune, string, "250000,0 (units,slope) added on character shadow maps", "Sets the depth bias <units>,<slope> added to the characters' shadow maps; 0 leaves the game's own.")
++SW(RX_VK_SHADOW_DIV, tune, int, "2: the shadow target at half its size", "(Deckport) Divides the 12288 shadow target size (1, 2 or 4).")
+ SW(RX_VK_SHADOW_FOLLOWS_SYNC, kill, bool, "on: the write-back shadow takes the same bytes as the mirror's sync", "0 fills the write-back shadow from guest memory at the write-back, as before.")
+ SW(RX_VK_SHADOW_PCF, kill, bool, "on (comparing samplers made linear: PCF)", "0 keeps the game's own filter on depth-comparison samplers, without the shadow edge softening.")
+ SW(RX_VK_SHADOW_RAW, kill, bool, "off: shadows are made by the VRAM-pressure rule", "Write-back shadows are made by the count alone, as before the VRAM-pressure rule.")
+@@ -575,13 +597,3 @@ SW(RX_VK_XESS_DIR, attempt, string, "libxess.dll is looked for beside the execut
+ SW(RX_VK_XESS_HDR, kill, bool, "on: XeSS gets an HDR context when the game presents native HDR", "=0 makes XeSS use the LDR context and clamped colour even with native HDR.")
+ SW(RX_VK_ZERO_HOLES, kill, bool, "on (Linux): never-written holes in guest memory are skipped by the all-zero check", "=0 reads the whole storage in the all-zero check, as before.")
+ SW(RX_VK_ZERO_UPLOAD, kill, bool, "on: a texture of 32 MB or more whose storage is all zero is cleared on the GPU", "=0 unswizzles and uploads all-zero big textures like any other.")
+-GONE(RX_VK_DESC_REUSE_DGEN, "2026-11-11", "it does nothing")
+-GONE(RX_VK_DESC_SLOTGEN, "2026-11-11", "use RX_VK_DESC_REUSE (the same 0 and 1) or the Descriptor reuse row")
+-GONE(RX_VK_FOLLOW_MESH, "2026-11-11", "it does nothing")
+-GONE(RX_VK_GPU_PROFILE, "2026-11-16", "use RX_VK_PASS_TIMING=1, which it was another name for")
+-GONE(RX_VK_NO_DESC_REUSE, "2026-11-11", "use RX_VK_DESC_REUSE=never")
+-GONE(RX_VK_NO_NAN_GUARD, "2026-11-11", "use RX_VK_NAN_GUARD=0")
+-GONE(RX_VK_OOT, "2026-11-11", "it does nothing")
+-GONE(RX_VK_OOT_EXPOSURE, "2026-11-11", "it does nothing")
+-GONE(RX_VK_OOT_FOG, "2026-11-11", "it does nothing")
+-GONE(RX_VK_OOT_VISUAL, "2026-11-11", "it does nothing")
+diff --git a/gpu/vk/vk_api.h b/gpu/vk/vk_api.h
+index 0f803c72..e39c3639 100644
+--- a/gpu/vk/vk_api.h
++++ b/gpu/vk/vk_api.h
+@@ -14,7 +14,7 @@
+ extern "C" {
+ #endif
+ 
+-#define MKWVK_API_VERSION 29
++#define MKWVK_API_VERSION 30
+ enum { HOS_MONITOR_CURRENT = 1, HOS_MONITOR_PRIMARY = 2 };
+ typedef struct MkwVkMonitor {
+     char id[512];             /* opaque persistent preference; never a runtime handle or list index */
+@@ -282,6 +282,9 @@ typedef struct MkwVkHost {
+     int (*monitor_count)(void);
+     int (*monitor_info)(int index, struct MkwVkMonitor *out);
+     void (*monitor_select)(const char *id);
++    /* (version 30, Deckport: Longshot #1661's renderer part, the A/B within one run, host/hos_ab.c HOS_AB): the side of the
++       frame from from_ns to to_ns, for the frame trace's ab_side column: -1 outside the A/B, 0 or 1, 2 or 3 in a transition */
++    int (*ab_frame)(int64_t from_ns, int64_t to_ns);
+ } MkwVkHost;
+ 
+ /* One completed temporal-upscale sample; all zero while inactive. */
+diff --git a/gpu/vk/vk_deckport_menu.h b/gpu/vk/vk_deckport_menu.h
+new file mode 100644
+index 00000000..72760583
+--- /dev/null
++++ b/gpu/vk/vk_deckport_menu.h
+@@ -0,0 +1,697 @@
++// (Deckport) O menu do port no visual do menu de Sistema do jogo: abas em cima (L1/R1), coluna de seções à esquerda,
++// pergaminho com as opções à direita, dicas de botão no rodapé. Desenho aprovado pelo Kewin em 2026-11-10
++// (projetos/zelda-oot/menu/menu-deckport.html no repo steam-deck). Ocupa a tela inteira, na resolução da janela.
++// Desenhado com o Dear ImGui da v2.1.0 (fontes do próprio jogo: ui::Fonts). Incluído em vk_menu.cpp, dentro do
++// namespace anônimo, antes do draw_menu: usa as opções do
++// Hookshot (opts, rows, save, restart_state) e as do Deckport (opts.dp_*, linhas TAB_DECKPORT, gravadas no mesmo ini).
++// As opções que mudam mods ou variáveis da abertura (texturas, grama, distância, sombras, idioma) valem ao reiniciar:
++// "Aplicar e reiniciar" grava, deixa o arquivo deckport_reiniciar ao lado do ini e fecha o jogo; o rodar-zelda.sh vê o
++// arquivo e abre o jogo de novo com as escolhas novas. RX_VK_DECKPORT_MENU=0 volta ao menu do Hookshot.
++#pragma once
++
++namespace dp {
++
++bool on() {
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("RX_VK_DECKPORT_MENU");
++        v = !e || atoi(e) != 0;
++    }
++    return v != 0;
++}
++
++// ---------------------------------------------------------------- o modelo
++struct Choice { const char* label; int v; };
++enum Kind { K_VALUE, K_INFO, K_ACTION };
++enum Action { A_NONE, A_RESTART, A_QUIT };
++struct Item {
++    const char* name;
++    int* value;                      // (nullptr: informação ou ação)
++    std::vector<Choice> ch;
++    const char* help;
++    Kind kind = K_VALUE;
++    bool restart = false;            // (vale ao reiniciar)
++    bool preset = false;             // (faz parte da predefinição: mexer vira Personalizado)
++    const char* (*gain)(int idx) = nullptr;   // (ganho medido no Deck, para o valor escolhido)
++    Action action = A_NONE;
++    const char* info = nullptr;      // (K_INFO: o valor mostrado)
++};
++enum SecType { S_LIST, S_PRESET, S_MAP, S_ABOUT };
++struct Section { const char* name; const char* title; SecType type; std::vector<Item> items; };
++struct Tab { const char* name; std::vector<Section> secs; };
++
++int lang = 0;   // (índice em kLangs: o language.txt ao lado do jogo)
++int lang_start = 0;
++struct Lang { const char* code; const char* name; };
++const Lang kLangs[] = {{"pt-BR", "Português (Brasil)"}, {"en-US", "English (US)"}, {"en-GB", "English (UK)"},
++                       {"es-419", "Español (Latinoamérica)"}, {"es", "Español (España)"}, {"fr", "Français"},
++                       {"fr-CA", "Français (Canada)"}, {"de", "Deutsch"}, {"it", "Italiano"}, {"nl", "Nederlands"},
++                       {"ru", "Russo"}, {"ja", "Japonês"}, {"ko", "Coreano"}, {"zh-Hans", "Chinês simplificado"}, {"zh-Hant", "Chinês tradicional"}};
++// (os nomes em escrita não latina ficam em português: a fonte do menu só tem o alfabeto latino)
++constexpr int kLangN = sizeof kLangs / sizeof kLangs[0];
++
++// predefinições: resolução interna (valor do Hookshot), distância, grama, sombras, texturas
++const char* const kPresets[] = {"Qualidade", "Equilibrado", "Desempenho", "Bateria", "Personalizado"};
++const int kPresetVals[4][5] = {{1, 4, 2, 0, 0}, {2, 2, 0, 1, 1}, {3, 1, 0, 2, 1}, {4, 0, 0, 2, 1}};
++int* preset_fields[5] = {&opts.resolution, &opts.dp_distance, &opts.dp_grass, &opts.dp_shadows, &opts.dp_textures};
++
++const char* g_preset(int i) { return i == 1 ? "Medido no castelo: 19 a 20 fps, 6,5 GB livres" : nullptr; }
++const char* g_shadows(int i) { return i == 1 ? "Medido no castelo: 300 MB a menos de memória de vídeo" : nullptr; }
++const char* g_textures(int i) { return i == 1 ? "Medido: 6,2 GB a menos de texturas" : "Medido: 2,9 GB a menos que o original"; }
++const char* g_distance(int i) { return i == 2 ? "Medido na Cidadela: 18,5 para 19,8 fps" : nullptr; }
++
++std::vector<Tab> tabs;
++std::vector<Choice> range(int lo, int hi, int step, const char* fmt) {
++    std::vector<Choice> c;
++    static std::deque<std::string> keep;   // (os textos ficam vivos enquanto o menu existir; deque: não muda de lugar)
++    for (int v = lo; v <= hi; v += step) {
++        char b[32];
++        snprintf(b, sizeof b, fmt, v);
++        keep.emplace_back(b);
++    }
++    size_t at = keep.size() - (size_t)((hi - lo) / step + 1);
++    for (int v = lo; v <= hi; v += step) c.push_back({keep[at++].c_str(), v});
++    return c;
++}
++
++void build() {
++    if (!tabs.empty()) return;
++    const std::vector<Choice> onoff = {{"Desligado", 0}, {"Ligado", 1}};
++    const std::vector<Choice> noyes = {{"Não", 0}, {"Sim", 1}};
++    std::vector<Choice> langs;
++    for (int i = 0; i < kLangN; i++) langs.push_back({kLangs[i].name, i});
++
++    Item preset{"Predefinição", &opts.dp_preset, {{"Qualidade", 0}, {"Equilibrado", 1}, {"Desempenho", 2}, {"Bateria", 3}},
++                "Ajusta de uma vez a resolução e o mundo. Equilibrado é o padrão do port."};
++    preset.gain = g_preset;
++    Item res{"Resolução interna", &opts.resolution, {{"100% (800p)", 1}, {"75% (600p)", 2}, {"67% (536p)", 3}, {"50% (400p)", 4}},
++             "Tamanho em que o mundo 3D é desenhado antes de ir para a tela. A interface continua nítida."};
++    res.preset = true;
++    Item sharp{"Nitidez", &opts.sharpness, range(0, 100, 10, "%d%%"),
++               "Realce de contorno depois da ampliação. Use mais quando a resolução interna estiver baixa."};
++    Item dist{"Distância de desenho", &opts.dp_distance, {{"Perto", 0}, {"Curta", 1}, {"Média", 2}, {"Longa", 3}, {"Original", 4}},
++              "Até onde a vegetação e os detalhes aparecem. Quanto mais perto, mais leve."};
++    dist.preset = dist.restart = true, dist.gain = g_distance;
++    Item grass{"Densidade da grama", &opts.dp_grass, {{"Baixa (50%)", 0}, {"Média (75%)", 1}, {"Original", 2}},
++               "Quantos tufos de grama o jogo planta por área. Hyrule Field é onde mais pesa."};
++    grass.preset = grass.restart = true;
++    Item shadows{"Sombras", &opts.dp_shadows, {{"Original", 0}, {"Média", 1}, {"Baixa", 2}},
++                 "Tamanho do mapa de sombra do sol. Na Média as sombras ficam quase iguais e mais leves."};
++    shadows.preset = shadows.restart = true, shadows.gain = g_shadows;
++    Item tex{"Texturas", &opts.dp_textures, {{"Altas (1024)", 0}, {"Médias (512)", 1}},
++             "Com Médias o castelo carregou e a Cidadela rodou inteira sem fechar. Altas pode faltar memória."};
++    tex.preset = tex.restart = true, tex.gain = g_textures;
++    Item fps{"Mostrar fps", &opts.show_fps, onoff, "Contador no canto superior direito. Vale na hora."};
++    Item speed{"Velocidade do jogo", &opts.realtime, {{"Por quadro", 0}, {"Tempo real", 1}},
++               "Abaixo de 30 fps: Tempo real mantém a velocidade do jogo; Por quadro deixa tudo mais lento junto."};
++    Item text{"Idioma do jogo", &lang, langs, "Idioma dos textos, legendas e vozes do jogo."};
++    text.restart = true;
++    Item tspeed{"Velocidade do texto", &opts.text_speed, {{"Normal", 0}, {"2x", 1}, {"4x", 2}, {"Instantânea", 3}},
++                "Quão rápido as falas aparecem na caixa de diálogo."};
++    Item mic{"Microfone", &opts.mic, {{"Desligado", 0}, {"Padrão do sistema", 1}},
++             "O que a ocarina ouve quando a opção de microfone do jogo está ligada."};
++    Item screen{"Resolução da tela", nullptr, {}, "O Deck sempre mostra 1280 x 800, em 16:10, sem barras pretas.", K_INFO};
++    screen.info = "1280 x 800";
++    Item gyro{"Mirar com giroscópio", &opts.gyro, onoff,
++              "Mexer o Deck move a mira do estilingue, do arco e do gancho, como no Switch."};
++    Item gsx{"Sensibilidade horizontal", &opts.gyro_sens_x, range(50, 300, 25, "%d%%"), "Quanto a mira anda para os lados."};
++    Item gsy{"Sensibilidade vertical", &opts.gyro_sens_y, range(50, 300, 25, "%d%%"), "Quanto a mira anda para cima e para baixo."};
++    Item gix{"Inverter horizontal", &opts.gyro_inv_x, noyes, "Troca esquerda e direita da mira."};
++    Item giy{"Inverter vertical", &opts.gyro_inv_y, noyes, "Troca cima e baixo da mira."};
++    Item rum{"Vibração", &opts.rumble, {{"Desligada", 0}, {"25%", 25}, {"50%", 50}, {"75%", 75}, {"100%", 100}, {"125%", 125}, {"150%", 150}},
++             "Força da vibração, em relação à do jogo."};
++    Item dz{"Zona morta do analógico", &opts.stick_dead_zone, {{"Padrão", 0}, {"5%", 1}, {"10%", 2}, {"15%", 3}, {"20%", 4}, {"30%", 5}},
++            "Quanto o analógico precisa sair do centro para contar. Aumente se o Link andar sozinho."};
++    Item cx{"Inverter câmera horizontal", &opts.invert_cam_x, noyes, "Troca esquerda e direita ao girar a câmera."};
++    Item cy{"Inverter câmera vertical", &opts.invert_cam_y, noyes, "Troca cima e baixo ao girar a câmera."};
++    Item prompts{"Ícones de botão", &opts.prompts, {{"Automático", 0}, {"Steam Deck", 5}, {"Switch", 1}, {"Xbox", 2}, {"PlayStation 5", 4}},
++                 "Os ícones de botão que o jogo mostra nos textos e menus."};
++    prompts.restart = true;
++    Item restart{"Reiniciar o jogo", nullptr, {}, "Fecha e abre o jogo de novo. Salve antes: aperte A duas vezes.", K_ACTION};
++    restart.action = A_RESTART;
++    Item quit{"Sair do jogo", nullptr, {}, "Volta para o Steam. Salve antes: aperte A duas vezes.", K_ACTION};
++    quit.action = A_QUIT;
++
++    tabs = {
++        {"Gráficos", {{"Predefinição", "Predefinição", S_PRESET, {preset}},
++                      {"Imagem", "Imagem", S_LIST, {screen, res, sharp}},
++                      {"Mundo", "Mundo", S_LIST, {dist, grass, shadows, tex}},
++                      {"Quadros", "Quadros por segundo", S_LIST, {fps, speed}}}},
++        {"Jogo", {{"Idioma", "Idioma", S_LIST, {text, tspeed}}, {"Som", "Som", S_LIST, {mic}}}},
++        {"Controle", {{"Botões", "Botões no Deck", S_MAP, {}},
++                      {"Giroscópio", "Giroscópio", S_LIST, {gyro, gsx, gsy, gix, giy}},
++                      {"Ajustes", "Ajustes", S_LIST, {rum, dz, cx, cy, prompts}}}},
++        {"Sobre", {{"Deckport", "Sobre o port", S_ABOUT, {}}, {"Sistema", "Sistema", S_LIST, {restart, quit}}}},
++    };
++}
++
++// ---------------------------------------------------------------- o estado
++int tab = 0, zone = 0;          // (zone 0: a coluna das seções; 1: as linhas do pergaminho)
++int sec[4] = {}, row[4] = {};
++const Item* armed = nullptr;    // (Reiniciar ou Sair esperando a segunda vez)
++bool msg_restarting = false;
++int start_vals[8];              // (o que esta abertura usa: distância, grama, sombras, texturas, ícones)
++int* restart_fields[] = {&opts.dp_distance, &opts.dp_grass, &opts.dp_shadows, &opts.dp_textures, &opts.prompts};
++constexpr int kRestartFields = 5;
++
++std::string game_dir() {
++    const std::string p = ini_path();
++    return p.substr(0, p.find_last_of("\\/") + 1);
++}
++void lang_read() {
++    lang = 0;
++    if (FILE* f = fopen((game_dir() + "language.txt").c_str(), "r")) {
++        char line[128];
++        while (fgets(line, sizeof line, f)) {
++            char* s = line;
++            while (*s == ' ' || *s == '\t') s++;
++            if (*s == '#' || *s == '\n' || *s == '\r' || !*s) continue;
++            size_t n = strcspn(s, " \t\r\n");
++            for (int i = 0; i < kLangN; i++)
++                if (strlen(kLangs[i].code) == n && !strncmp(s, kLangs[i].code, n)) lang = i;
++            break;
++        }
++        fclose(f);
++    }
++}
++void lang_write() {
++    const std::string path = game_dir() + "language.txt";
++    std::string out;
++    bool done = false;
++    if (FILE* f = fopen(path.c_str(), "r")) {
++        char line[256];
++        while (fgets(line, sizeof line, f)) {
++            const char* s = line;
++            while (*s == ' ' || *s == '\t') s++;
++            const bool code = *s && *s != '#' && *s != '\n' && *s != '\r';
++            if (code && !done) out += std::string(kLangs[lang].code) + "\n", done = true;
++            else if (!code) out += line;
++        }
++        fclose(f);
++    }
++    if (!done) out = std::string("# The game's language.\n\n") + kLangs[lang].code + "\n";
++    if (FILE* f = fopen(path.c_str(), "w")) fputs(out.c_str(), f), fclose(f);
++}
++bool started = false;
++void start() {
++    if (started) return;
++    started = true;
++    build();
++    lang_read();
++    lang_start = lang;
++    for (int i = 0; i < kRestartFields; i++) start_vals[i] = *restart_fields[i];
++}
++std::vector<std::string> pending_names() {
++    std::vector<std::string> v;
++    static const char* names[] = {"Distância", "Grama", "Sombras", "Texturas", "Ícones de botão"};
++    for (int i = 0; i < kRestartFields; i++)
++        if (*restart_fields[i] != start_vals[i]) v.push_back(names[i]);
++    if (lang != lang_start) v.push_back("Idioma");
++    return v;
++}
++
++int choice_index(const Item& it) {
++    if (!it.value || it.ch.empty()) return 0;
++    int best = 0, dist = 1 << 30;
++    for (size_t i = 0; i < it.ch.size(); i++) {
++        const int d = std::abs(it.ch[i].v - *it.value);
++        if (d < dist) dist = d, best = (int)i;
++    }
++    return best;
++}
++bool fixed(const Item& it) { return it.kind != K_VALUE || (it.value == &opts.resolution && row_fixed(&opts.resolution)); }
++void preset_apply(int p) {
++    if (p < 0 || p > 3) return;
++    for (int i = 0; i < 5; i++) *preset_fields[i] = kPresetVals[p][i];
++}
++void preset_check() {
++    const int p = opts.dp_preset;
++    if (p < 0 || p > 3) return;
++    for (int i = 0; i < 5; i++)
++        if (*preset_fields[i] != kPresetVals[p][i]) { opts.dp_preset = 4; return; }
++}
++void quiet_restart_ask() {   // (o Hookshot não pergunta ao fechar: aqui é o Y que aplica)
++    int now[mr::kMax];
++    restart_values(now);
++    restart_state.note(now);
++    restart_state.choose_later(now);
++}
++void set(const Item& it, int dir) {
++    if (fixed(it) || it.ch.empty()) return;
++    const int i = choice_index(it), n = (int)it.ch.size();
++    const int ni = std::min(std::max(i + dir, 0), n - 1);
++    if (ni == i && *it.value == it.ch[i].v) return;
++    *it.value = it.ch[ni].v;
++    if (it.value == &opts.dp_preset) preset_apply(*it.value);
++    else if (it.preset) preset_check();
++    if (it.value == &lang) lang_write();
++    if (it.value == &opts.mic && can_mic()) mic_chosen();
++    quiet_restart_ask();
++    save();
++}
++
++// ---------------------------------------------------------------- o desenho
++uint32_t W = 1280, H = 800;
++float K = 1.0f;
++int S(float v) { return (int)lroundf(v * K); }
++inline uint32_t rgb(int r, int g, int b) { return (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b; }
++inline uint32_t mix(uint32_t a, uint32_t b, float t) {
++    t = std::min(std::max(t, 0.0f), 1.0f);
++    auto c = [&](int sh) { return (uint32_t)lroundf(((a >> sh) & 255) * (1 - t) + ((b >> sh) & 255) * t) << sh; };
++    return c(16) | c(8) | c(0);
++}
++ImDrawList* DL = nullptr;
++ui::Fonts FN{};
++inline ImU32 col(uint32_t c, float a = 1) {
++    return IM_COL32((c >> 16) & 255, (c >> 8) & 255, c & 255, (int)lroundf(std::min(std::max(a, 0.0f), 1.0f) * 255));
++}
++void box(int x, int y, int w, int h, uint32_t c, float a = 1) {
++    if (w > 0 && h > 0) DL->AddRectFilled(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), col(c, a));
++}
++void vgrad(int x, int y, int w, int h, uint32_t c0, uint32_t c1) {
++    const ImU32 a = col(c0), b = col(c1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), a, a, b, b);
++}
++void hfade(int x, int y, int w, int h, uint32_t c, float a0, float a1) {   // (faixa que esmaece da esquerda para a direita)
++    const ImU32 l = col(c, a0), r = col(c, a1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), l, r, r, l);
++}
++void vfade(int x, int y, int w, int h, uint32_t c, float a0, float a1) {   // (de cima para baixo)
++    const ImU32 t = col(c, a0), b = col(c, a1);
++    DL->AddRectFilledMultiColor(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), t, t, b, b);
++}
++void frame(int x, int y, int w, int h, uint32_t c, int t = 1, float a = 1) {
++    box(x, y, w, t, c, a), box(x, y + h - t, w, t, c, a), box(x, y + t, t, h - 2 * t, c, a), box(x + w - t, y + t, t, h - 2 * t, c, a);
++}
++void glow(int x, int y, int w, int h) {   // (o contorno branco com brilho do item em foco, como no jogo)
++    for (int i = 6; i >= 1; i--) frame(x - S(3) - i, y - S(3) - i, w + 2 * (S(3) + i), h + 2 * (S(3) + i), 0xffffff, 1, 0.07f * (7 - i));
++    frame(x - S(3), y - S(3), w + 2 * S(3), h + 2 * S(3), 0xffffff, std::max(2, S(3)));
++}
++void disc(float cx, float cy, float r, uint32_t c, float a = 1) { DL->AddCircleFilled(ImVec2(cx, cy), r, col(c, a), 24); }
++void rrect(int x, int y, int w, int h, int r, uint32_t c, float a = 1) {
++    DL->AddRectFilled(ImVec2((float)x, (float)y), ImVec2((float)(x + w), (float)(y + h)), col(c, a), (float)r);
++}
++ImFont* face(bool bold) { return bold ? FN.strong : FN.body; }
++int text_w(const char* s, float px, bool bold) { return (int)ceilf(ui::size_of(face(bold), (float)S(px), s).x); }
++// (texto com o topo em y; align: 0 esquerda, 1 centro, 2 direita; sombra opcional)
++void text(int x, int y, const char* s, float px, bool bold, uint32_t c, int align = 0, bool shadow = false) {
++    const float size = (float)S(px);
++    const float w = align ? ui::size_of(face(bold), size, s).x : 0;
++    const float tx = align == 1 ? x - w * 0.5f : align == 2 ? x - w : (float)x;
++    if (shadow) DL->AddText(face(bold), size, ImVec2(tx, (float)y + std::max(1, S(1))), col(0, 0.75f), s);
++    DL->AddText(face(bold), size, ImVec2(tx, (float)y), col(c), s);
++}
++int wrap(int x, int y, int width, const char* s, float px, bool bold, uint32_t c, float lh = 1.35f) {
++    const float size = (float)S(px);
++    DL->AddText(face(bold), size, ImVec2((float)x, (float)y), col(c), s, nullptr, (float)width);
++    return (int)ceilf(face(bold)->CalcTextSizeA(size, FLT_MAX, (float)width, s).y);
++}
++// glifo do Deck: círculo claro com a letra (A, B, X, Y, L, R, ≡) ou retângulo (L1, R1, L2, L4...)
++int glyph(int x, int cy, const char* t, bool rect = false) {
++    const uint32_t bg = rgb(243, 238, 228), fg = rgb(43, 33, 22);
++    if (!rect) {
++        const float r = K * 12;
++        disc(x + r, (float)cy, r, bg);
++        if (!strcmp(t, "=")) {   // (o botão Menu do Deck: três traços)
++            for (int i = -1; i <= 1; i++) box((int)(x + r) - S(6), cy + i * S(4) - std::max(1, S(1)), S(12), std::max(2, S(2)), fg);
++        } else {
++            text((int)(x + r), cy - S(9), t, 14, true, fg, 1);
++        }
++        return (int)(2 * r);
++    }
++    const int w = text_w(t, 12, true) + S(10), h = S(20);
++    rrect(x, cy - h / 2, w, h, S(4), bg);
++    text(x + w / 2, cy - S(8), t, 12, true, fg, 1);
++    return w;
++}
++
++// as áreas clicáveis desta pintura (o toque e o mouse: hit)
++struct Rect { int x, y, w, h; };
++Rect r_tabs[4], r_secs[8], r_rows[12], r_y, r_b, r_a;
++int n_secs = 0, n_rows = 0;
++bool in(const Rect& r, int x, int y) { return r.w > 0 && x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h; }
++
++const uint32_t C_NIGHT = rgb(10, 6, 4), C_IVORY = rgb(246, 239, 224), C_INK = rgb(59, 40, 16), C_INK2 = rgb(90, 63, 23),
++               C_GOLD = rgb(216, 166, 50), C_CREAM = rgb(240, 220, 174);
++
++void paint_bar() {
++    // faixa de couro com a borda de baixo recortada (colunas de 4 px)
++    for (int x = 0; x < (int)W; x += 4) {
++        const float fx = (float)x / K;
++        const float edge = 74 + 6 * sinf(fx * 0.011f) + 3 * sinf(fx * 0.037f + 1.3f) + (fx < 90 || fx > 1190 ? 10 : 0);
++        const int e = S(edge);
++        vgrad(x, 0, 4, e, rgb(138, 108, 67), rgb(109, 82, 50));
++        box(x, e, 4, S(3), rgb(40, 26, 12), 0.8f);
++    }
++    // espirais nas pontas
++    for (int side = 0; side < 2; side++) {
++        const float cx = side ? W - K * 22 : K * 22, cy = K * 92;
++        for (float t = 0; t < 10.5f; t += 0.02f) {
++            const float r = K * (2 + t * 1.1f);
++            disc(cx + (side ? -1 : 1) * r * cosf(t), cy + r * sinf(t), K * 1.3f, rgb(200, 169, 110));
++        }
++    }
++    text(S(30), S(14), "Deckport", 24, true, C_IVORY, 0, true);
++    text(S(31), S(42), "STEAM DECK", 11, true, C_CREAM);
++    // abas
++    const int tw = S(150), total = tw * (int)tabs.size(), x0 = ((int)W - total) / 2;
++    glyph(x0 - S(46), S(33), "L1", true);
++    glyph(x0 + total + S(16), S(33), "R1", true);
++    for (int i = 0; i < (int)tabs.size(); i++) {
++        const int x = x0 + i * tw;
++        if (i == tab) vgrad(x, 0, tw, S(66), rgb(95, 65, 37), rgb(75, 49, 26)), box(x, S(64), tw, S(2), rgb(42, 26, 12));
++        text(x + tw / 2, S(19), tabs[i].name, 21, true, C_IVORY, 1, true);
++        r_tabs[i] = {x, 0, tw, S(66)};
++    }
++    // canto direito: a predefinição em uso
++    text((int)W - S(28), S(16), kPresets[std::min(std::max(opts.dp_preset, 0), 4)], 19, true, C_IVORY, 2, true);
++    text((int)W - S(28), S(42), "predefinição", 13, false, C_CREAM, 2);
++}
++
++void paint_column() {
++    const Tab& t = tabs[tab];
++    const int x = S(38), y = S(122), w = S(318), h = (int)H - S(122) - S(74);
++    vgrad(x, y, w, h, rgb(51, 38, 26), rgb(36, 26, 18));
++    frame(x, y, w, h, rgb(74, 55, 36));
++    frame(x + S(10), y + S(10), w - S(20), h - S(20), 0xffffff, 1, 0.06f);
++    n_secs = (int)t.secs.size();
++    int by = S(160);
++    for (int i = 0; i < n_secs; i++) {
++        if (i == 1 && n_secs > 2) {   // (ornamento entre o primeiro e os outros, como Load / Options no jogo)
++            const int oy = by - S(2);
++            hfade(S(90), oy, S(70), std::max(1, S(1)), rgb(140, 115, 80), 0, 1);
++            hfade(S(240), oy, S(70), std::max(1, S(1)), rgb(140, 115, 80), 1, 0);
++            text(S(200), oy - S(11), "~", 18, true, rgb(140, 115, 80), 1);
++            by += S(20);
++        }
++        const int bx = S(84), bw = S(226), bh = S(48);
++        const bool open = i == sec[tab];
++        vgrad(bx, by, bw, bh, open ? rgb(154, 118, 70) : rgb(128, 97, 58), open ? rgb(130, 99, 58) : rgb(108, 81, 48));
++        frame(bx, by, bw, bh, rgb(42, 28, 14));
++        frame(bx + S(5), by + S(5), bw - S(10), bh - S(10), rgb(168, 139, 90), 1, 0.9f);
++        text(bx + bw / 2, by + S(11), t.secs[i].name, 21, false, C_IVORY, 1, true);
++        if (zone == 0 && open) glow(bx, by, bw, bh);
++        r_secs[i] = {bx, by, bw, bh};
++        by += bh + S(16);
++    }
++}
++
++void paint_parchment_bg(int x, int y, int w, int h) {
++    box(x, y, w, h, rgb(184, 150, 92));
++    const uint32_t dark = rgb(120, 88, 42);
++    const int bw = w / 3, bh = h / 3;
++    hfade(x, y, bw, h, dark, 0.75f, 0), hfade(x + w - bw, y, bw, h, dark, 0, 0.75f);
++    vfade(x, y, w, bh, dark, 0.6f, 0), vfade(x, y + h - bh, w, bh, dark, 0, 0.7f);
++    for (int k = 0; k < h; k += 7) box(x, y + k, w, 1, 0xffffff, 0.025f);   // (fibras do papel)
++    frame(x, y, w, h, rgb(75, 50, 20));
++}
++
++void paint_title(int cx, int y, const char* s) {
++    text(cx, y, s, 30, true, rgb(58, 39, 9), 1);
++    const int tw = text_w(s, 30, true);
++    for (int side = -1; side <= 1; side += 2) {   // (o ornamento de cada lado: traço e voluta)
++        const int ox = cx + side * (tw / 2 + S(14));
++        const int lx = side < 0 ? ox - S(40) : ox;
++        box(lx, y + S(19), S(26), std::max(2, S(2)), rgb(58, 39, 9));
++        const float vx = side < 0 ? ox - S(40) - S(2) : ox + S(30);
++        for (float t = 0; t < 8.0f; t += 0.03f) {
++            const float r = K * (1.5f + t * 0.7f);
++            disc(vx + side * r * cosf(t), y + S(19) + r * sinf(t), K * 1.0f, rgb(58, 39, 9));
++        }
++    }
++}
++
++void paint_row(int x, int y, int w, const Item& it, bool focus) {
++    const int h = S(46);
++    if (focus) hfade(x, y, w, h, rgb(127, 97, 47), 1, 0.95f);
++    else hfade(x, y, w, h, rgb(110, 84, 40), 0.85f, 0.0f);
++    text(x + S(18), y + S(11), it.name, 19, false, C_IVORY, 0, true);
++    int nx = x + S(18) + text_w(it.name, 19, false) + S(10);
++    if (it.restart) {   // (selo "ao reiniciar")
++        const int bw = text_w("ao reiniciar", 12, true) + S(10);
++        box(nx, y + S(14), bw, S(18), rgb(230, 196, 109));
++        text(nx + bw / 2, y + S(15), "ao reiniciar", 12, true, rgb(43, 28, 5), 1);
++    }
++    const uint32_t ink = focus ? C_IVORY : C_INK;
++    const int right = x + w - S(14);
++    if (it.kind == K_ACTION) {
++        const bool arm = armed == &it;
++        text(right, y + S(11), arm ? "Aperte A de novo" : "A", 19, true, arm ? C_GOLD : ink, 2);
++        return;
++    }
++    const char* val = it.kind == K_INFO ? it.info : it.ch.empty() ? "" : it.ch[choice_index(it)].label;
++    if (it.value == &opts.dp_preset && opts.dp_preset == 4) val = "Personalizado";
++    const int vw = S(210), vx = right - vw;
++    text(vx + vw / 2, y + S(11), val, 19, true, ink, 1);
++    if (!fixed(it)) {   // (setas)
++        const float a = focus ? 1.0f : 0.35f;
++        const int ay = y + h / 2;
++        for (int i = 0; i < S(10); i++) {
++            box(vx + i, ay - i * 7 / 10, 1, 2 * (i * 7 / 10) + 1, ink, a);
++            box(right - i, ay - i * 7 / 10, 1, 2 * (i * 7 / 10) + 1, ink, a);
++        }
++    }
++}
++
++void paint_hint(int x, int y, int w, const Item* it) {
++    box(x, y, w, std::max(1, S(1)), C_INK2, 0.35f);
++    if (!it) return;
++    wrap(x, y + S(14), w - S(260), it->help, 17, false, rgb(58, 39, 9));
++    if (it->gain && it->value) {
++        const char* g = it->gain(choice_index(*it));
++        if (g) {
++            const int gw = S(230), gx = x + w - gw;
++            box(gx, y + S(14), gw, S(58), rgb(79, 58, 28));
++            text(gx + gw - S(10), y + S(20), "GANHO MEDIDO NO DECK", 11, true, rgb(233, 214, 166), 2);
++            wrap(gx + S(10), y + S(38), gw - S(20), g, 14, true, C_IVORY, 1.2f);
++        }
++    }
++}
++
++void paint_preset_table(int x, int y, int w) {
++    static const char* labels[5] = {"Resolução interna", "Distância", "Grama", "Sombras", "Texturas"};
++    static const char* vals[5][4] = {{"100%", "75%", "67%", "50%"}, {"Original", "Média", "Curta", "Perto"},
++                                     {"Original", "Baixa", "Baixa", "Baixa"}, {"Original", "Média", "Baixa", "Baixa"},
++                                     {"Altas", "Médias", "Médias", "Médias"}};
++    const int c0 = S(200), cw = (w - c0) / 4, rh = S(30);
++    const int act = opts.dp_preset;
++    if (act >= 0 && act < 4) box(x + c0 + act * cw, y, cw, rh * 6, 0xffffff, 0.16f);
++    for (int c = 0; c < 4; c++) text(x + c0 + c * cw + cw / 2, y + S(6), kPresets[c], 15, true, rgb(58, 39, 9), 1);
++    for (int r = 0; r < 5; r++) {
++        const int ry = y + rh * (r + 1);
++        box(x, ry, w, std::max(1, S(1)), C_INK2, 0.2f);
++        text(x, ry + S(6), labels[r], 16, true, rgb(58, 39, 9));
++        for (int c = 0; c < 4; c++) text(x + c0 + c * cw + cw / 2, ry + S(6), vals[r][c], 16, c == act, rgb(58, 39, 9), 1);
++    }
++}
++
++void paint_map(int x, int y, int w) {
++    // o Deck, simplificado, no centro
++    const int dw = S(380), dh = S(140), dx = x + (w - dw) / 2, dy = y + S(30);
++    rrect(dx + S(30), dy - S(14), S(56), S(22), S(8), rgb(42, 32, 22));
++    rrect(dx + dw - S(86), dy - S(14), S(56), S(22), S(8), rgb(42, 32, 22));
++    rrect(dx, dy, dw, dh, S(52), rgb(30, 23, 18));
++    rrect(dx + S(108), dy + S(12), S(164), S(104), S(6), rgb(13, 10, 8));
++    box(dx + S(116), dy + S(20), S(148), S(88), rgb(42, 32, 22));
++    disc(dx + K * 52, dy + K * 38, K * 15, rgb(43, 33, 22)), disc(dx + K * 52, dy + K * 38, K * 11, rgb(70, 55, 38));
++    box(dx + S(42), dy + S(66), S(10), S(30), rgb(70, 55, 38)), box(dx + S(32), dy + S(76), S(30), S(10), rgb(70, 55, 38));
++    disc(dx + dw - K * 52, dy + K * 98, K * 15, rgb(43, 33, 22)), disc(dx + dw - K * 52, dy + K * 98, K * 11, rgb(70, 55, 38));
++    const float bx = dx + dw - K * 52, by = dy + K * 46;
++    const char* f[4] = {"Y", "X", "B", "A"};
++    const float off[4][2] = {{0, -16}, {-16, 0}, {16, 0}, {0, 16}};
++    for (int i = 0; i < 4; i++) {
++        disc(bx + K * off[i][0], by + K * off[i][1], K * 8.5f, rgb(43, 33, 22));
++        text((int)(bx + K * off[i][0]), (int)(by + K * off[i][1]) - S(7), f[i], 11, true, rgb(233, 220, 192), 1);
++    }
++    // rótulos dos dois lados, como os do "Basic Controls" do jogo
++    auto lab = [&](bool right, int ly, const char* g, bool rect, const char* t) {
++        const int lw = S(176), lx = right ? x + w - lw : x;
++        if (right) hfade(lx, ly, lw, S(32), rgb(110, 84, 40), 0.0f, 0.85f);
++        else hfade(lx, ly, lw, S(32), rgb(110, 84, 40), 0.85f, 0.0f);
++        if (right) {
++            const int gw = glyph(lx + S(10), ly + S(16), g, rect);
++            text(lx + S(18) + gw, ly + S(5), t, 17, false, C_IVORY, 0, true);
++        } else {
++            const int tw = text_w(t, 17, false);
++            text(lx + S(10), ly + S(5), t, 17, false, C_IVORY, 0, true);
++            glyph(lx + S(18) + tw, ly + S(16), g, rect);
++        }
++    };
++    lab(false, y + S(20), "L2", true, "Mirar");
++    lab(false, y + S(64), "L", false, "Mover");
++    lab(false, y + S(108), "R2", true, "Usar o item");
++    lab(false, y + S(152), "L1", true, "Trocar de aba");
++    lab(true, y + S(20), "=", false, "Abrir o menu");
++    lab(true, y + S(64), "B", false, "Ações e correr");
++    lab(true, y + S(108), "A", false, "Guardar");
++    lab(true, y + S(152), "Y", false, "Pular");
++    lab(true, y + S(196), "R", false, "Câmera");
++}
++
++void paint_about(int x, int y, int w) {
++    const int col = w / 2 - S(12);
++    text(x, y + S(10), "Deckport", 40, true, rgb(58, 39, 9));
++    text(x, y + S(58), "STEAMDECK VERSION", 14, true, C_INK2);
++    wrap(x, y + S(96), col, "The Legend of Zelda: Ocarina of Time, versão de Switch 2, rodando nativo no Steam Deck.", 17, false, rgb(58, 39, 9));
++    wrap(x, y + S(170), col, "Motor Deckport 2.1.0, feito a partir do Hookshot.", 17, false, rgb(58, 39, 9));
++    const int rx = x + w / 2 + S(12);
++    int ry = y + S(10);
++    auto block = [&](const char* h, const char* body) {
++        text(rx, ry, h, 14, true, C_INK2);
++        ry += S(22);
++        ry += wrap(rx, ry, col, body, 17, false, rgb(58, 39, 9)) + S(14);
++    };
++    block("PORT PARA STEAM DECK", "Kewin Lima");
++    block("MOTOR BASE", "Hookshot (NotRexed e colaboradores), licença GPL-3.0. O código do motor e das nossas mudanças acompanha o port.");
++    block("JOGO", "Nintendo. Você precisa da sua própria cópia do jogo.");
++}
++
++void paint_footer() {
++    const int y = (int)H - S(58), cy = y + S(29);
++    hfade((int)(W * 0.35f), y, (int)W - (int)(W * 0.35f), (int)H - y, 0, 0, 0.6f);
++    int x = (int)W - S(34);
++    auto hint = [&](const char* label, const char* g, bool rect, uint32_t c, Rect* r) {
++        const int gw = rect ? text_w(g, 12, true) + S(10) : S(24);
++        x -= gw;
++        glyph(x, cy, g, rect);
++        const int lw = text_w(label, 20, false);
++        x -= S(9) + lw;
++        text(x, cy - S(13), label, 20, false, c, 0, true);
++        if (r) *r = {x, y, lw + S(9) + gw, S(58)};
++        x -= S(28);
++    };
++    r_y = r_b = r_a = {0, 0, 0, 0};
++    hint(zone == 1 ? "Voltar" : "Fechar", "B", false, C_IVORY, &r_b);
++    const Section& s = tabs[tab].secs[sec[tab]];
++    if (zone == 0 && !s.items.empty()) hint("Selecionar", "A", false, C_IVORY, &r_a);
++    if (zone == 1) hint("Mudar", "<  >", true, C_IVORY, nullptr);
++    if (!pending_names().empty()) hint("Aplicar e reiniciar", "Y", false, rgb(246, 215, 125), &r_y);
++}
++
++void paint(ui::Ctx& c) {
++    DL = c.d, FN = c.f, W = (uint32_t)c.w, H = (uint32_t)c.h, K = std::min(c.w / 1280.0f, c.h / 800.0f);
++    const uint32_t w = W, h = H;
++    start();
++    box(0, 0, (int)w, (int)h, C_NIGHT);
++    for (int i = 30; i >= 1; i--) disc(w * 0.7f, h * 0.55f, h * 0.025f * i, rgb(52, 32, 16), 0.035f);
++    paint_bar();
++    paint_column();
++    const Tab& t = tabs[tab];
++    const Section& s = t.secs[sec[tab]];
++    const int px = S(398), py = S(150), pw = S(842), ph = (int)h - S(150) - S(112);
++    paint_parchment_bg(px, py, pw, ph);
++    paint_title(px + pw / 2, py + S(22), s.title);
++    const int cx = px + S(40), cy = py + S(84), cw = pw - S(80);
++    n_rows = 0;
++    if (s.type == S_MAP) paint_map(cx, cy, cw);
++    else if (s.type == S_ABOUT) paint_about(cx, cy, cw);
++    else {
++        int ry = cy;
++        for (size_t i = 0; i < s.items.size(); i++) {
++            paint_row(cx, ry, cw, s.items[i], zone == 1 && (int)i == row[tab]);
++            r_rows[i] = {cx, ry, cw, S(46)};
++            ry += S(52);
++        }
++        n_rows = (int)s.items.size();
++        if (s.type == S_PRESET) paint_preset_table(cx, ry + S(6), cw);
++        const Item* hi = s.items.empty() ? nullptr : &s.items[zone == 1 ? row[tab] : 0];
++        paint_hint(cx, py + ph - S(118), cw, hi);
++    }
++    if (s.type == S_MAP)
++        paint_hint(cx, py + ph - S(118), cw, nullptr),
++        wrap(cx, py + ph - S(104), cw, "Mesmas posições do controle do Switch: o botão da direita faz as ações, o de baixo guarda e o de cima pula. Este menu abre com View e Menu juntos.", 17, false, rgb(58, 39, 9));
++    // faixa do reinício pendente
++    const auto pend = pending_names();
++    if (!pend.empty()) {
++        std::string l = pend.size() == 1 ? "1 opção vale ao reiniciar o jogo: " : std::to_string(pend.size()) + " opções valem ao reiniciar o jogo: ";
++        for (size_t i = 0; i < pend.size(); i++) l += (i ? ", " : "") + pend[i];
++        text(px + pw / 2, py + ph + S(10), l.c_str(), 16, false, rgb(246, 215, 125), 1);
++    }
++    paint_footer();
++    if (msg_restarting) {
++        const int mw = S(520), mh = S(110), mx = ((int)w - mw) / 2, my = ((int)h - mh) / 2;
++        box(mx, my, mw, mh, rgb(27, 18, 11), 0.96f);
++        frame(mx, my, mw, mh, rgb(179, 148, 97));
++        text(mx + mw / 2, my + S(26), "Salvando e reiniciando o jogo", 21, true, C_IVORY, 1);
++        text(mx + mw / 2, my + S(62), "Você volta para o ponto em que salvou por último.", 15, false, rgb(185, 178, 162), 1);
++    }
++}
++
++// ---------------------------------------------------------------- a entrada
++void apply_restart() {
++    msg_restarting = true;
++    save();
++    pipeline_cache_save(true);
++    if (FILE* f = fopen((game_dir() + "deckport_reiniciar").c_str(), "w")) fputs("1\n", f), fclose(f);
++    logf("menu (Deckport): aplicar e reiniciar");
++    if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
++}
++
++// press: as teclas do menu_tick (1 cima, 2 baixo, 3 esquerda, 4 direita, 5 B/Esc, 7 A/Enter); y: o Y do controle
++bool tick(bool* press, bool tab_left, bool tab_right, bool y, bool mouse, int mx, int my, uint32_t clicks, bool mine) {
++    start();
++    bool changed = false;
++    // toque e mouse: o que está sob o dedo (as áreas da última pintura)
++    if (mouse && (clicks & HOS_MOUSE_LEFT)) {
++        for (int i = 0; i < (int)tabs.size(); i++)
++            if (in(r_tabs[i], mx, my) && i != tab) tab = i, zone = 0, changed = true;
++        for (int i = 0; i < n_secs; i++)
++            if (in(r_secs[i], mx, my)) sec[tab] = i, row[tab] = 0, zone = 0, changed = true;
++        for (int i = 0; i < n_rows; i++)
++            if (in(r_rows[i], mx, my)) {
++                const bool again = zone == 1 && row[tab] == i;
++                zone = 1, row[tab] = i, changed = true;
++                if (again) {
++                    const Item& it = tabs[tab].secs[sec[tab]].items[i];
++                    if (it.kind == K_ACTION) press[7] = true;
++                    else press[mx < r_rows[i].x + r_rows[i].w * 3 / 4 ? 3 : 4] = true;
++                }
++            }
++        if (in(r_y, mx, my)) y = true;
++        if (in(r_b, mx, my)) press[5] = true;
++        if (in(r_a, mx, my)) press[7] = true;
++    }
++    if (clicks & HOS_MOUSE_RIGHT) press[5] = true;
++    if (tab_left || tab_right) {
++        tab = (tab + (tab_right ? 1 : (int)tabs.size() - 1)) % (int)tabs.size();
++        zone = 0, armed = nullptr, changed = true;
++    }
++    const Section& s = tabs[tab].secs[sec[tab]];
++    if (y && !pending_names().empty() && mine) { apply_restart(); return true; }
++    if (zone == 0) {
++        if (press[1] || press[2]) {
++            const int n = (int)tabs[tab].secs.size();
++            sec[tab] = (sec[tab] + (press[1] ? n - 1 : 1)) % n, row[tab] = 0, changed = true;
++        } else if ((press[7] || press[4]) && !s.items.empty()) {
++            zone = 1, row[tab] = 0, changed = true;
++        } else if (press[5]) {
++            open_now = false, armed = nullptr, changed = true;
++        }
++    } else if (s.items.empty()) {
++        zone = 0, changed = true;
++    } else {
++        const int n = (int)s.items.size();
++        const Item& it = s.items[std::min(row[tab], n - 1)];
++        if (press[1] || press[2]) row[tab] = (row[tab] + (press[1] ? n - 1 : 1)) % n, armed = nullptr, changed = true;
++        else if (press[5]) zone = 0, armed = nullptr, changed = true;
++        else if (it.kind == K_ACTION && press[7] && mine) {
++            if (armed != &it) armed = &it, changed = true;
++            else if (it.action == A_RESTART) {
++                armed = nullptr, msg_restarting = true, changed = true;
++                save();
++                pipeline_cache_save(true);
++                logf("menu (Deckport): reiniciar");
++                if (const HWND window = app_window()) PostMessageA(window, WM_APP + 9, 0, 0);
++            } else if (it.action == A_QUIT) {
++                armed = nullptr, save();
++                pipeline_cache_save(true);
++                if (const HWND window = app_window()) PostMessageA(window, WM_CLOSE, 0, 0);
++            }
++        } else if (press[3] || press[4] || press[7]) {
++            set(it, press[3] ? -1 : 1), changed = true;
++        }
++    }
++    return changed;
++}
++
++} // namespace dp
+diff --git a/gpu/vk/vk_deckport_shaders.h b/gpu/vk/vk_deckport_shaders.h
+new file mode 100644
+index 00000000..eb6d974f
+--- /dev/null
++++ b/gpu/vk/vk_deckport_shaders.h
+@@ -0,0 +1,69 @@
++// (Deckport) O selo "shaders" no canto de baixo à esquerda: aparece quando o renderizador está montando pipelines ou
++// traduzindo shaders, para quem joga saber que a queda de quadros daquele momento é isso. Pedido do Kewin (2026-11-17).
++// Lê os contadores de tempo que o renderizador já soma (draw_stats2: pipelines; draw_stats4: bibliotecas de pipeline;
++// shader_translate_ms: traduções). Uma montagem que trava o quadro só aparece no quadro seguinte, então o selo fica na tela
++// por kHold segundos depois do último trabalho. Incluído em vk_menu.cpp, dentro do namespace anônimo, depois do
++// vk_deckport_startup.h. RX_VK_DECKPORT_SHADERS=0 tira o selo.
++#pragma once
++
++namespace dp {
++
++bool shaders_on() {
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("RX_VK_DECKPORT_SHADERS");
++        v = !e || atoi(e) != 0;
++    }
++    return v != 0;
++}
++
++constexpr double kWorkMs = 1.5;   // (trabalho num quadro acima disso conta: pipelines lidos do cache levam menos)
++constexpr float kHold = 1.2f, kFadeIn = 0.12f, kFadeOut = 0.35f;   // (segundos)
++
++struct ShaderBadge {
++    double last_ms = -1;     // (a soma dos contadores no quadro anterior)
++    int64_t seen_ns = 0;     // (o último quadro com trabalho)
++    int64_t since_ns = 0;    // (quando o selo apareceu desta vez)
++    float alpha = 0;
++};
++ShaderBadge badge;
++
++/// Lê os contadores e diz quão visível o selo está agora (0 a 1). Chamado a cada quadro, com o selo na tela ou não.
++float shaders_alpha() {
++    int64_t passes = 0, mesh = 0, links = 0, hits = 0, cold = 0, built = 0;
++    double pipe_ms = 0, link_ms = 0, lib_ms = 0;
++    draw_stats2(&passes, &mesh, &pipe_ms);
++    draw_stats4(&links, &link_ms, &hits, &cold, &built, &lib_ms);
++    const double total = pipe_ms + lib_ms + shader_translate_ms();
++    const int64_t now = prof_now();
++    if (badge.last_ms >= 0 && total - badge.last_ms > kWorkMs) {
++        if (badge.alpha <= 0) badge.since_ns = now;
++        badge.seen_ns = now;
++    }
++    badge.last_ms = total;
++    if (!badge.seen_ns) return badge.alpha = 0;
++    const float idle = (float)((now - badge.seen_ns) / 1e9), up = (float)((now - badge.since_ns) / 1e9);
++    float a = st_clamp(up / kFadeIn);
++    if (idle > kHold) a = std::min(a, 1 - st_clamp((idle - kHold) / kFadeOut));
++    return badge.alpha = std::max(0.0f, a);
++}
++
++/// O selo: uma placa escura arredondada, um arco dourado girando e "shaders".
++void draw_shaders(ui::Ctx& c, float a) {
++    if (a <= 0) return;
++    ImDrawList* d = c.d;
++    const float s = fps_scale(c), fs = 15 * s, r = 7 * s, pad = 8 * s;
++    const char* txt = "shaders";
++    const ImVec2 ts = ui::size_of(c.f.strong, fs, txt);
++    const float w = pad + 2 * r + 7 * s + ts.x + pad + 2 * s, h = std::max(2 * r, ts.y) + 2 * pad - 4 * s;
++    const float x0 = c.safe + 14 * s, y1 = c.h - c.safe - 14 * s, y0 = y1 - h;
++    d->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + w, y1), st_col(a * 0.62f, 12, 10, 8), h / 2);
++    const ImVec2 p(x0 + pad + r, (y0 + y1) / 2);
++    const float t = (float)(prof_now() / 1e9), ang = t * 6.2f;
++    d->AddCircle(p, r, st_col(a * 0.22f, 255, 232, 180), 32, 2.2f * s);
++    d->PathArcTo(p, r, ang, ang + 4.0f, 28);
++    d->PathStroke(st_col(a, 255, 214, 130), 0, 2.4f * s);
++    d->AddText(c.f.strong, fs, ImVec2(p.x + r + 7 * s, (y0 + y1) / 2 - ts.y / 2), st_col(a * 0.92f, 245, 238, 225), txt);
++}
++
++}  // namespace dp
+diff --git a/gpu/vk/vk_deckport_startup.h b/gpu/vk/vk_deckport_startup.h
+new file mode 100644
+index 00000000..242af6d0
+--- /dev/null
++++ b/gpu/vk/vk_deckport_startup.h
+@@ -0,0 +1,195 @@
++// (Deckport) A tela de abertura do port, animada, no lugar da tela do Hookshot enquanto os shaders são preparados.
++// Pedido do Kewin: fundo preto, o logo do jogo aparece, um flare passa revelando "STEAMDECK VERSION" e só então
++// entra a barra dos shaders. Depois disso, brilhos discretos no logo e um reflexo correndo na barra.
++// O logo é o assets/hookshot.png da árvore (trocado pelo patch_tela_abertura.py pelo logo do port, 640x478, com
++// "STEAMDECK VERSION" na faixa de baixo: kSv*). Incluído em vk_menu.cpp, dentro do namespace anônimo, antes do
++// draw_startup. RX_VK_DECKPORT_STARTUP=0 volta à tela do Hookshot. RX_VK_DP_STARTUP_T=<segundos> congela a animação
++// num instante (para capturas de teste).
++#pragma once
++
++namespace dp {
++
++bool startup_on() {
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("RX_VK_DECKPORT_STARTUP");
++        v = !e || atoi(e) != 0;
++    }
++    return v != 0;
++}
++
++// (onde "STEAMDECK VERSION" fica no logo, em fração da largura e da altura da imagem)
++constexpr float kSvX0 = 210.0f / 640, kSvY0 = 407.0f / 478, kSvY1 = 441.0f / 478;
++// (a linha do tempo, em segundos desde o primeiro quadro)
++constexpr float kLogo0 = 0.35f, kLogo1 = 1.75f;   // (o logo aparece)
++constexpr float kFl0 = 2.05f, kFl1 = 3.15f;       // (o flare atravessa e revela a faixa)
++constexpr float kFlOut = 0.7f;                    // (o flare some)
++constexpr float kBar0 = 3.3f, kBarIn = 0.6f;      // (a barra entra)
++constexpr float kStartupMin = 4.2f;               // (a tela dura pelo menos isso: vk_main.cpp)
++
++inline float st_clamp(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
++inline float st_out(float x) { x = 1 - st_clamp(x); return 1 - x * x * x; }
++inline float st_smooth(float x) { x = st_clamp(x); return x * x * (3 - 2 * x); }
++inline ImU32 st_col(float a, int r = 255, int g = 255, int b = 255) { return IM_COL32(r, g, b, (int)(st_clamp(a) * 255 + 0.5f)); }
++
++/// Um flare: halo, risco horizontal comprido, risco vertical curto e o miolo. r o raio do halo, a a força (0 a 1)
++void st_flare(ui::Ctx& c, ImVec2 p, float r, float a) {
++    if (a <= 0 || r <= 0) return;
++    ImDrawList* d = c.d;
++    for (int i = 14; i >= 1; i--) d->AddCircleFilled(p, r * i / 14.0f, st_col(a * 0.05f, 255, 232, 180), 48);
++    const ImU32 mid = st_col(a * 0.9f, 255, 246, 222), end = st_col(0, 255, 246, 222);
++    const float L = r * 4.2f, T = std::max(1.0f, r * 0.07f);
++    d->AddRectFilledMultiColor(ImVec2(p.x - L, p.y - T), ImVec2(p.x, p.y + T), end, mid, mid, end);
++    d->AddRectFilledMultiColor(ImVec2(p.x, p.y - T), ImVec2(p.x + L, p.y + T), mid, end, end, mid);
++    const float V = r * 1.3f, W = std::max(1.0f, r * 0.045f);
++    d->AddRectFilledMultiColor(ImVec2(p.x - W, p.y - V), ImVec2(p.x + W, p.y), end, end, mid, mid);
++    d->AddRectFilledMultiColor(ImVec2(p.x - W, p.y), ImVec2(p.x + W, p.y + V), mid, mid, end, end);
++    d->AddCircleFilled(p, r * 0.16f, st_col(a), 24);
++}
++
++/// O logo em pedaços: tudo menos a faixa "STEAMDECK VERSION", e a faixa só até onde o flare já passou (reveal, 0 a 1)
++void st_logo(ui::Ctx& c, ImTextureData* logo, float x0, float top, float lw, float lh, float a, float reveal) {
++    const ImU32 col = st_col(a);
++    auto piece = [&](float ua, float va, float ub, float vb) {
++        c.d->AddImage(logo->GetTexRef(), ImVec2(x0 + lw * ua, top + lh * va), ImVec2(x0 + lw * ub, top + lh * vb), ImVec2(ua, va),
++                      ImVec2(ub, vb), col);
++    };
++    piece(0, 0, 1, kSvY0);
++    piece(0, kSvY0, kSvX0, kSvY1);
++    piece(0, kSvY1, 1, 1);
++    if (reveal > 0) {
++        c.d->PushClipRect(ImVec2(x0, top), ImVec2(x0 + lw * (kSvX0 + (1 - kSvX0) * reveal), top + lh), true);
++        piece(kSvX0, kSvY0, 1, kSvY1);
++        c.d->PopClipRect();
++    }
++}
++
++/// Os textos da tela (vk_progress.h startup_view, em inglês) em português, como o menu do port
++std::string st_pt(std::string t) {
++    static const char* const kMap[][2] = {
++        {"Closing", "Fechando"},
++        {"Keeping what is prepared for the next start", "O que já foi preparado fica guardado para a próxima vez"},
++        {"Starting the game", "Iniciando o jogo"},
++        {"Preparing shaders", "Preparando os shaders"},
++        {"Building pipelines", "Montando os pipelines"},
++        {"Loading pipelines", "Carregando os pipelines"},
++        {"This happens once after an update. Closing the window keeps what is done.",
++         "Isso acontece uma vez depois de cada atualização. Se fechar o jogo, o que já foi feito fica guardado."},
++        {"Reading the game's shaders", "Lendo os shaders do jogo"},
++        {"Reading the pipeline notes", "Lendo as anotações dos pipelines"},
++        {"Loading the shader cache", "Carregando o cache de shaders"},
++        {"a few seconds left", "faltam alguns segundos"},
++    };
++    for (const auto& m : kMap)
++        if (t == m[0]) return m[1];
++    int a = 0, b = 0;
++    char buf[64];
++    if (sscanf(t.c_str(), "STEP %d OF %d", &a, &b) == 2) return snprintf(buf, sizeof buf, "Etapa %d de %d", a, b), buf;
++    if (sscanf(t.c_str(), "about %d s left", &a) == 1 && t.find(" s left") != std::string::npos)
++        return snprintf(buf, sizeof buf, "faltam uns %d s", a), buf;
++    if (sscanf(t.c_str(), "about %d min left", &a) == 1) return snprintf(buf, sizeof buf, "faltam uns %d min", a), buf;
++    if (t.find(" / ") != std::string::npos)   // ("16,300 / 38,809 shaders": o ponto de milhar)
++        for (char& ch : t)
++            if (ch == ',') ch = '.';
++    return t;
++}
++
++/// (teste) RX_VK_DP_STARTUP_T definido: a tela é desenhada mesmo sem janela (capturas RX_VK_SHOT_MENU), com números de exemplo
++bool startup_test() {
++    static const bool on = getenv("RX_VK_DP_STARTUP_T") != nullptr;
++    return on;
++}
++
++void paint_startup(ui::Ctx& c, const StartupView& view, float fade) {
++    using clk = std::chrono::steady_clock;
++    static const clk::time_point t0 = clk::now();
++    static const float forced = getenv("RX_VK_DP_STARTUP_T") ? (float)atof(getenv("RX_VK_DP_STARTUP_T")) : -1.0f;
++    StartupView v = view;
++    if (startup_test() && v.title.empty()) {
++        v.version = "v2.1.0", v.step = "STEP 1 OF 2", v.title = "Preparing shaders", v.pct = "42%", v.fraction = 0.42;
++        v.left = "16,300 / 38,809 shaders", v.right = "about 4 min left", v.hint = "This happens once after an update. Closing the window keeps what is done.";
++    }
++    v.step = st_pt(v.step), v.title = st_pt(v.title), v.left = st_pt(v.left), v.right = st_pt(v.right), v.hint = st_pt(v.hint);
++    const float t = forced >= 0 ? forced : std::chrono::duration<float>(clk::now() - t0).count();
++    const float s = c.s, w = c.w, h = c.h, cx = w * 0.5f, k = s * 0.86f;
++    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), IM_COL32(0, 0, 0, 255));
++
++    // o logo: aparece crescendo de leve para o lugar
++    float aspect = 1;
++    ImTextureData* logo = ui::logo(&aspect);
++    const float lh = 168 * s, lw = lh * aspect, top = h * 0.5f - 180 * s, x0 = cx - lw * 0.5f;
++    const float in = st_out((t - kLogo0) / (kLogo1 - kLogo0));
++    const float reveal = st_smooth((t - kFl0) / (kFl1 - kFl0));
++    if (logo && in > 0) {
++        const float sc = 1.06f - 0.06f * in;
++        st_logo(c, logo, cx - lw * sc * 0.5f, top + lh * 0.5f - lh * sc * 0.5f, lw * sc, lh * sc, in, reveal);
++    } else if (!logo) {
++        ui::spaced(c, c.f.heading, 42 * k, ImVec2(cx, top + lh * 0.5f), ui::alpha(ui::rgba(246, 232, 204), in), "DECKPORT", 6 * k);
++    }
++
++    // a barra e os textos, que entram depois do flare (o fundo é preto: um preto por cima faz a entrada)
++    float y = top + lh + 14 * s;
++    const float bar_in = st_clamp((t - kBar0) / kBarIn);
++    if (bar_in > 0) {
++        const std::string credit = "Deckport, feito a partir do Hookshot " + v.version;
++        ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y), ui::kDim, credit.c_str());
++        if (!v.title.empty()) {
++            y += 34 * k;
++            if (!v.step.empty()) {
++                ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, v.step.c_str());
++            }
++            ui::text_centre(c, c.f.heading, 24 * k, ImVec2(cx, y + 20 * k), ui::kInk, v.title.c_str());
++            const float bx0 = cx - 270 * k, bx1 = cx + 270 * k, by = y + 64 * k;
++            float under = by;
++            if (v.fraction >= 0) {
++                const float bh = 26 * k, pad = 4 * k, fx = bx0 + pad + (bx1 - bx0 - 2 * pad) * (float)std::min(v.fraction, 1.0);
++                c.d->AddRectFilled(ImVec2(bx0, by), ImVec2(bx1, by + bh), ui::kCellDark);
++                c.d->AddRect(ImVec2(bx0, by), ImVec2(bx1, by + bh), ui::kEdge, 0, std::max(1.0f, s));
++                if (fx > bx0 + pad) {
++                    ui::gold(c, ImVec2(bx0 + pad, by + pad), ImVec2(fx, by + bh - pad));
++                    // (um reflexo correndo no ouro, da esquerda para a direita)
++                    const float bw = 46 * k, sx = bx0 + (bx1 - bx0 + 2 * bw) * (fmodf(t, 2.4f) / 2.4f) - bw;
++                    const ImU32 hi = st_col(0.38f, 255, 252, 236), no = st_col(0, 255, 252, 236);
++                    c.d->PushClipRect(ImVec2(bx0 + pad, by + pad), ImVec2(fx, by + bh - pad), true);
++                    c.d->AddRectFilledMultiColor(ImVec2(sx - bw, by), ImVec2(sx, by + bh), no, hi, hi, no);
++                    c.d->AddRectFilledMultiColor(ImVec2(sx, by), ImVec2(sx + bw, by + bh), hi, no, no, hi);
++                    c.d->PopClipRect();
++                }
++                const float split = std::max(fx, bx0 + pad);
++                c.d->PushClipRect(ImVec2(bx0, by), ImVec2(split, by + bh), true);
++                ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kGoldInk, v.pct.c_str());
++                c.d->PopClipRect();
++                c.d->PushClipRect(ImVec2(split, by), ImVec2(bx1, by + bh), true);
++                ui::text_mid_centre(c, c.f.strong, 15 * k, cx, by + bh * 0.5f, ui::kInk, v.pct.c_str());
++                c.d->PopClipRect();
++                under = by + bh;
++            }
++            const float px = 16.5f * k;
++            ui::text(c, c.f.body, px, ImVec2(v.fraction >= 0 ? bx0 : cx - ui::size_of(c.f.body, px, v.left.c_str()).x * 0.5f, under + 12 * k),
++                     ui::kSoft, v.left.c_str());
++            if (!v.right.empty())
++                ui::text(c, c.f.body, px, ImVec2(bx1 - ui::size_of(c.f.body, px, v.right.c_str()).x, under + 12 * k), ui::kSoft, v.right.c_str());
++            if (!v.hint.empty()) ui::text_centre(c, c.f.body, 15.5f * k, ImVec2(cx, by + 92 * k), ui::kDim, v.hint.c_str());
++        }
++        if (bar_in < 1) c.d->AddRectFilled(ImVec2(0, top + lh + 6 * s), ImVec2(w, h), st_col(1 - bar_in, 0, 0, 0));
++    }
++
++    if (logo) {
++        // o flare que revela a faixa: anda junto da borda revelada, e no fim abre e some
++        if (t > kFl0 && t < kFl1 + kFlOut) {
++            const float out = t < kFl1 ? 0 : (t - kFl1) / kFlOut;
++            const float a = t < kFl1 ? st_clamp((t - kFl0) / 0.18f) : 1 - out;
++            st_flare(c, ImVec2(x0 + lw * (kSvX0 + (1 - kSvX0) * reveal), top + lh * (kSvY0 + kSvY1) * 0.5f), lh * 0.34f * (1 + 0.6f * out), a);
++        }
++        // depois, brilhos discretos em pontos do logo, cada um no seu ritmo
++        static const float kTw[][2] = {{0.10f, 0.31f}, {0.475f, 0.04f}, {0.92f, 0.45f}, {0.985f, 0.865f}, {0.19f, 0.42f}, {0.60f, 0.33f}};
++        if (t > kStartupMin)
++            for (int i = 0; i < 6; i++) {
++                const float period = 3.4f + 0.9f * i, ph = fmodf(t + i * 1.7f, period);
++                if (ph < 0.9f) st_flare(c, ImVec2(x0 + lw * kTw[i][0], top + lh * kTw[i][1]), lh * 0.06f, sinf(ph / 0.9f * 3.14159f) * 0.85f);
++            }
++    }
++    if (fade > 0) c.d->AddRectFilled(ImVec2(0, 0), ImVec2(w, h), st_col(std::min(fade, 1.0f), 0, 0, 0));
++}
++
++} // namespace dp
+diff --git a/gpu/vk/vk_draw.cpp b/gpu/vk/vk_draw.cpp
+index 4690bcf6..dbe662a3 100644
+--- a/gpu/vk/vk_draw.cpp
++++ b/gpu/vk/vk_draw.cpp
+@@ -3054,27 +3054,31 @@ float upscale_lod_bias() {
+     return upscaler_rows::upscale_lod_bias_for(up, resolution_scale(), offset);   // (share in 1/10000 of the output; 0: Auto)
+ }
+ /// compare: the shader reads depth with a reference (a sampler without one cannot compare)
+-VkSampler sampler_make(int id, bool compare);
++VkSampler sampler_make(int id, bool compare, bool one_level = false);
+ // (each texture of each draw found its sampler through reg_mu, a copy of the registration, a hash of it and a map lookup:
+ // ~48000 times a frame at 3000 draws. Now a thread's table by id and compare, good while no sampler registration's contents
+ // changed (sampler_registrations_generation). RX_VK_SAMPLER_CACHE=0 turns off both this table and the parameters' cache inside
+ // sampler_make; =1 or the Sampler cache row turns the parameters' cache on (this table stays on, as it is without the option)
+ bool sampler_cache_on();   // (longshot, RX_VK_SAMPLER_CACHE and the Sampler cache row: defined below with the descriptor fingerprint's)
+-VkSampler sampler_for(int id, bool compare) {
++// (Deckport, #584) one_level: the texture it samples has a single level (a render target: the menu's FXAA reads one). The
++// anisotropy the options force is left out there: it adds no detail without levels, and on RADV the derivatives of a sample
++// inside the FXAA's branches spread it over texels far away (dark specks over the menu's 3D previews). RX_VK_ANISO_ONE_LEVEL=1:
++// forced there too, as before
++VkSampler sampler_for(int id, bool compare, bool one_level) {
+     static const bool on = !getenv("RX_VK_SAMPLER_CACHE") || atoi(getenv("RX_VK_SAMPLER_CACHE")) != 0;
+-    if (!on || id < 0 || id >= 4096) return sampler_make(id, compare);
++    if (!on || id < 0 || id >= 4096) return sampler_make(id, compare, one_level);
+     struct Entry { uint64_t gen; VkSampler s; uint64_t frame; };
+-    static thread_local Entry table[2][4096];   // (gen 0: never filled; the generation starts at 1)
++    static thread_local Entry table[4][4096];   // (gen 0: never filled; the generation starts at 1)
+     const uint64_t gen = sampler_registrations_generation();   // (read first: a registration after it makes the next call miss)
+     // (near the device's sampler limit, an entry lasts a present: the book sees the samplers in use, sampler_book)
+     const uint64_t frame = sampler_book.watching.load(std::memory_order_relaxed) ? texture_frame_no() : 0;
+-    Entry& e = table[compare ? 1 : 0][id];
++    Entry& e = table[(compare ? 1 : 0) | (one_level ? 2 : 0)][id];
+     if (e.gen == gen && e.frame == frame) return e.s;
+-    const VkSampler made = sampler_make(id, compare);
++    const VkSampler made = sampler_make(id, compare, one_level);
+     if (made) e = {gen, made, frame};   // (a failed creation is retryable without a new registration)
+     return made;
+ }
+-VkSampler sampler_make(int id, bool compare) {
++VkSampler sampler_make(int id, bool compare, bool one_level) {
+     nvn_samp_par p{};
+     bool known = false;
+     if (sampler_cache_on()) {   // (longshot: what an id holds stays cached with its version on this thread: resolving an id
+@@ -3092,7 +3096,9 @@ VkSampler sampler_make(int id, bool compare) {
+     const float up_bias = p.lod_bias < 0.0f ? upscale_lod_bias() : 0.0f;   // (the game's upscaled materials only)
+     uint32_t up_bits;
+     std::memcpy(&up_bits, &up_bias, sizeof up_bits);
+-    uint64_t key = mix(mix(compare ? 0xC0 : 0xAB, aniso_override()), up_bits);
++    static const bool aniso_one_level = env_on("RX_VK_ANISO_ONE_LEVEL");   // (Deckport, #584: sampler_for's note)
++    const uint32_t forced_aniso = one_level && !aniso_one_level ? 0u : aniso_override();
++    uint64_t key = mix(mix(mix(compare ? 0xC0 : 0xAB, aniso_override()), up_bits), forced_aniso);
+     const uint8_t* b = reinterpret_cast<const uint8_t*>(&p);
+     for (size_t i = 0; i < sizeof p; i += 8) {
+         uint64_t w = 0;
+@@ -3161,8 +3167,8 @@ VkSampler sampler_make(int id, bool compare) {
+     }
+     // (a linear filter with mip levels, linear or nearest between them: OoT asks for both, 2x with linear levels and 1x with
+     // nearest ones, its world's materials with a LOD bias of -0.5 either way)
+-    if (aniso_override() && ci.minFilter == VK_FILTER_LINEAR && p.minf != NVN_MIN_FILTER_LINEAR)
+-        aniso = std::max(aniso, (float)aniso_override());
++    if (forced_aniso && ci.minFilter == VK_FILTER_LINEAR && p.minf != NVN_MIN_FILTER_LINEAR)
++        aniso = std::max(aniso, (float)forced_aniso);
+     ci.anisotropyEnable = aniso > 1.0f && dev.features.samplerAnisotropy;
+     ci.maxAnisotropy = std::clamp(aniso, 1.0f, dev.props.limits.maxSamplerAnisotropy);
+     ci.compareEnable = compare && p.cmp_mode != 0;
+@@ -4349,7 +4355,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
+                                (void*)view, view ? "" : " (dummy)");
+                 if (view && tex && tex->gpu_written) draw_sampled().push_back(tex);
+                 if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
+-                out.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth), view, VK_IMAGE_LAYOUT_GENERAL});
++                out.imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth, tex && tex->levels <= 1), view, VK_IMAGE_LAYOUT_GENERAL});
+             }
+             w.pImageInfo = &out.imgs[first];
+             out.writes.push_back(w);
+@@ -4628,6 +4634,14 @@ bool bind_descriptors(VkCommandBuffer cmd, VkPipelineBindPoint bp, const Program
+ struct Checkpoint { uint64_t prog; uint64_t frame; uint32_t seq; char kind; };
+ Checkpoint checkpoints[1 << 16];
+ std::atomic<uint32_t> checkpoint_n{0};
++// (Deckport) each marked program's stage codes, for the report (program_code_keys, noted once a program at its first draw)
++std::mutex marker_codes_mu;
++std::unordered_map<uint64_t, std::string> marker_codes;
++std::string marker_codes_of(uint64_t key) {
++    std::lock_guard lk(marker_codes_mu);
++    const auto it = marker_codes.find(key);
++    return it == marker_codes.end() ? std::string() : it->second;
++}
+ 
+ // (VK_AMD_buffer_marker, where the NV checkpoints are missing: marker i's sequence number goes to word 2i when the GPU
+ // reaches it and to word 2i + 1 once all the work before it is done. Host memory, not VRAM: a GPU reset loses VRAM.)
+@@ -4792,8 +4806,9 @@ void buffer_markers_report() {
+     logf("vk: device lost: %u markers set, %u reached; the last whose earlier work all finished: %u", n, reached, last_done);
+     const auto line = [](const char* what, uint32_t s) {
+         const Checkpoint& k = checkpoints[(s - 1) & 0xFFFF];
+-        logf("vk:   %s: marker %u (%s %016llx, frame %llu)", what, s, checkpoint_kind(k.kind), (unsigned long long)k.prog,
+-             (unsigned long long)k.frame);
++        const std::string codes = (k.kind == 'd' || k.kind == 'c' || k.kind == 'i') ? marker_codes_of(k.prog) : std::string();
++        logf("vk:   %s: marker %u (%s %016llx, frame %llu)%s%s", what, s, checkpoint_kind(k.kind), (unsigned long long)k.prog,
++             (unsigned long long)k.frame, codes.empty() ? "" : "; its code:", codes.c_str());
+     };
+     for (uint32_t s = last_done > 6 ? last_done - 6 : 1; last_done && s < last_done; s++) line("finished before", s);
+     // (from the last finished marker to the first reached one whose earlier work did not finish: what the GPU was running)
+@@ -5180,13 +5195,16 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
+                     std::find(footprint.begin(), footprint.end(), cur_program->key) != footprint.end();
+     // the viewport upside down (negative height): NVN's NDC has +y up, Vulkan's down
+     float vx = s.viewport[0][0], vy = s.viewport[0][1], vw = s.viewport[0][2], vh = s.viewport[0][3];
++    // (Deckport, RX_VK_SHADOW_DIV: a pass into a shrunk depth target alone: the game's pixels divided)
++    const int32_t shr = (at.depth && at.depth->shrink > 1 && !at.n) ? (int32_t)at.depth->shrink : 1;
++    if (shr > 1) vx /= (float)shr, vy /= (float)shr, vw /= (float)shr, vh /= (float)shr;
+     if (vw == 0.0f && vh == 0.0f) vx = 0, vy = 0, vw = (float)at.width, vh = (float)at.height;
+     d.vp = {vx, vy + vh, vw, -vh, std::clamp(s.depth_near, 0.0f, 1.0f), std::clamp(s.depth_far, 0.0f, 1.0f)};
+     d.sc = {{0, 0}, {at.width, at.height}};
+     if (s.scissor[2] > 0 && s.scissor[3] > 0) {
+-        const int32_t x0 = std::max(0, s.scissor[0]), y0 = std::max(0, s.scissor[1]);
+-        const int32_t x1 = std::min<int32_t>(s.scissor[0] + s.scissor[2], (int32_t)at.width);
+-        const int32_t y1 = std::min<int32_t>(s.scissor[1] + s.scissor[3], (int32_t)at.height);
++        const int32_t x0 = std::max(0, s.scissor[0] / shr), y0 = std::max(0, s.scissor[1] / shr);
++        const int32_t x1 = std::min<int32_t>((s.scissor[0] + s.scissor[2] + shr - 1) / shr, (int32_t)at.width);
++        const int32_t y1 = std::min<int32_t>((s.scissor[1] + s.scissor[3] + shr - 1) / shr, (int32_t)at.height);
+         d.sc = {{x0, y0}, {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)}};
+     }
+     std::memcpy(d.blend, s.blend_color, sizeof d.blend);
+@@ -5714,7 +5732,15 @@ void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool dep
+     }
+     clear_after_draws(cmd);
+     begin_pass(cmd, at);
+-    const VkRect2D rect = clear_rect(s, at.width, at.height);
++    const uint32_t cshr = at.depth->shrink > 1 && !at.n ? at.depth->shrink : 1;   // (Deckport, RX_VK_SHADOW_DIV)
++    VkRect2D rect = clear_rect(s, at.width * cshr, at.height * cshr);
++    if (cshr > 1) {
++        const uint32_t x1 = std::min(at.width, (rect.offset.x + rect.extent.width + cshr - 1) / cshr);
++        const uint32_t y1 = std::min(at.height, (rect.offset.y + rect.extent.height + cshr - 1) / cshr);
++        rect.offset.x /= (int32_t)cshr, rect.offset.y /= (int32_t)cshr;
++        rect.extent.width = x1 > (uint32_t)rect.offset.x ? x1 - rect.offset.x : 0;
++        rect.extent.height = y1 > (uint32_t)rect.offset.y ? y1 - rect.offset.y : 0;
++    }
+     if (!rect.extent.width || !rect.extent.height) return;
+     VkClearAttachment ca{};
+     ca.aspectMask = aspect;
+@@ -7683,6 +7709,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
+         // grid (a culling pass), until the kernel resets it at 10 s, in the Great Deku Tree and Kokiri Forest (issue 817). About
+         // 30 programs use it; RX_VK_SKIP_CODE=2c56dc1006942f74 leaves them out and the Deck plays without the hang, but without
+         // the models they draw too: a workaround, opt-in)
++        if (checkpoints_on()) {   // (Deckport: the codes for the markers' report)
++            std::lock_guard lk(marker_codes_mu);
++            if (marker_codes.find(cp->key) == marker_codes.end()) marker_codes.emplace(cp->key, program_code_keys(s));
++        }
+         static const char* skip_code_list = getenv("RX_VK_SKIP_CODE");
+         if (skip_code_list && *skip_code_list) {
+             static std::mutex memo_mu;
+diff --git a/gpu/vk/vk_main.cpp b/gpu/vk/vk_main.cpp
+index 08a0fbe7..11839a6b 100644
+--- a/gpu/vk/vk_main.cpp
++++ b/gpu/vk/vk_main.cpp
+@@ -1290,6 +1290,10 @@ void prepare_with_screen() {
+     static std::atomic<bool> paint_stop{false};
+     HANDLE painted = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+     std::thread painter([t0, painted] {
++        auto deckport_startup_min = [] {   // (Deckport: a animação de entrada inteira, vk_deckport_startup.h kStartupMin)
++            const char* e = getenv("RX_VK_DECKPORT_STARTUP");
++            return !e || atoi(e) != 0 ? 4.2 : 0.0;
++        };
+         ProgressClock eta;   // (over the whole bar: its units, PrepareBar)
+         PrepareBar bar;
+         double next_log = 10;
+@@ -1330,8 +1334,8 @@ void prepare_with_screen() {
+                 last_w = w, last_h = h;
+             }
+             if (w && h) present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+-            if (finished || paint_stop.load()) break;
+-            Sleep(33);
++            if ((finished && secs >= deckport_startup_min()) || paint_stop.load()) break;
++            Sleep(16);
+         }
+         // (the end: a fade to black over 0.4 s, so the game's first frame comes out of black, not cut in over the screen; none
+         // after a screen of under 1.5 s, a blink, or when the window is not shown (paint_stop: its presents wait))
+diff --git a/gpu/vk/vk_memory.cpp b/gpu/vk/vk_memory.cpp
+index 95bf9b5d..d7b33ab0 100644
+--- a/gpu/vk/vk_memory.cpp
++++ b/gpu/vk/vk_memory.cpp
+@@ -4557,6 +4557,63 @@ void note_direct_write(Pool& p, uint64_t off, uint64_t size) {   // (pools_mu he
+         wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value, 0);
+ }
+ 
++// (Deckport) RX_VK_BIND_SNAPSHOT_KB: a read binding of a pool with no mirror, up to that many KB, is served from a copy
++// of its bytes as submitted, in the recording's stream (patches/patch_bind_snapshot.py)
++uint64_t bind_snapshot_max() {
++    static const uint64_t n = [] {
++        const char* e = getenv("RX_VK_BIND_SNAPSHOT_KB");
++        const uint64_t kb = e ? (uint64_t)std::max(0, atoi(e)) : 0;
++        if (kb) logf("vk: read bindings of pools with no mirror copied as submitted, up to %llu KB each (RX_VK_BIND_SNAPSHOT_KB)",
++                     (unsigned long long)kb);
++        return kb << 10;
++    }();
++    return n;
++}
++int64_t st_snap_binds, st_snap_bytes, st_snap_big, st_snap_big_bytes, st_snap_failed;
++int64_t st_snap_gpu, st_snap_again;
++/// (pools_mu held) the copy, or nothing: over the size, a pool the GPU writes, no recording, no room in its stream.
++/// A pool the GPU wrote in guest memory in the last 4000 submissions is left alone: the copy is made on the CPU while
++/// the replay records, before the GPU has run the writes recorded ahead of it, and would hold the bytes from before
++/// them (measured: copying those too took a scene from 182 flashes to 1,577). The same range bound again in a
++/// submission gets the copy made for it before (one recording held 98 MB of copies without this)
++BufferRef bind_snapshot(const Pool& p, uint64_t gpu, uint64_t guest, uint64_t size) {
++    const uint64_t max = bind_snapshot_max();
++    if (!max || !size) return {};
++    if (size > max) {
++        st_snap_big++, st_snap_big_bytes += size;
++        return {};
++    }
++    if (p.direct_write_epoch && mirror_epoch - p.direct_write_epoch < 4000) {
++        st_snap_gpu++;
++        return {};
++    }
++    struct Made { uint64_t stamp = 0; std::unordered_map<uint64_t, BufferRef> at; };
++    static thread_local Made made;
++    if (made.stamp != mirror_epoch) made.stamp = mirror_epoch, made.at.clear();
++    const uint64_t key = guest * 0x9E3779B97F4A7C15ull ^ size;
++    if (const auto it = made.at.find(key); it != made.at.end() && it->second.size == size) {
++        st_snap_again++;
++        return it->second;
++    }
++    static thread_local std::vector<uint8_t> tmp;
++    if (tmp.size() < size) tmp.resize(size);
++    if (!host->gpu_read(gpu, tmp.data(), size)) return {};
++    if (capture_on() && captures_seen.load(std::memory_order_relaxed)) {   // (as memory_read_as_submitted, the lock held already)
++        for (uint64_t page = guest >> kPageShift; page < (guest + size + 4095) >> kPageShift; page++) {
++            const CapEntry e = cap_entry(page);
++            if (!e.gen || e.gen != page_gen(page)) continue;
++            auto b = cap_bufs.find(e.gen);
++            if (b == cap_bufs.end() || !b->second.map) continue;
++            const uint64_t a = std::max(page << kPageShift, guest), z = std::min((page + 1) << kPageShift, guest + size);
++            std::memcpy(tmp.data() + (a - guest), (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096 + (a - (page << kPageShift)), z - a);
++        }
++    }
++    const BufferRef r = stream_copy(tmp.data(), size);
++    if (r) st_snap_binds++, st_snap_bytes += size, made.at[key] = r;
++    else st_snap_failed++;
++    return r;
++}
++
+ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+     if (written) texture_gpu_wrote(gpu, size);
+     // (below 1 TB a GPU address is the guest address itself, and a pool holds the whole range or nothing: the host's
+@@ -4589,7 +4646,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+         Pool* p = tl.p;
+         const uint64_t off = guest - p->lo;
+         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+-        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED) {
++        const bool snap = bind_snapshot_max() && mirror_upload && p->mstate != Pool::MIRROR_ON;   // (Deckport: below, under the lock)
++        if (!snap && (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED)) {
+             note_in_place_read(!mirror_upload);
+             return remember({p->buffer, off, size, 0});
+         }
+@@ -4620,6 +4678,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
+     const uint64_t off = guest - p->lo;
+     if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED) {
++        if (!written && mirror_upload && p->direct_write_epoch != mirror_epoch)   // (Deckport)
++            if (const BufferRef r = bind_snapshot(*p, gpu, guest, size)) return r;
+         if (written) note_direct_write(*p, off, size);
+         if (mirror_on()) { auto& e = direct_by_pool[p->lo]; e.first++, e.second = mirror_upload ? (int)p->mstate : 9; direct_bytes_by_pool[p->lo] += size; }
+         // (longshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
+@@ -4649,6 +4709,8 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+         mirror_wanted.push_back(p);
+     }
+     if (p->mstate != Pool::MIRROR_ON) {
++        if (!written && p->direct_write_epoch != mirror_epoch)   // (Deckport)
++            if (const BufferRef r = bind_snapshot(*p, gpu, guest, size)) return r;
+         auto& e = direct_by_pool[p->lo];
+         e.first++, e.second = (int)p->mstate;
+         direct_bytes_by_pool[p->lo] += size;
+@@ -6174,6 +6236,13 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
+                 s += b;
+             }
+             logf("vk:   read live, by pool:%s", s.c_str());
++            if (bind_snapshot_max()) {   // (Deckport)
++                static int64_t l_n, l_b, l_big, l_bigb;
++                logf("vk:   bind snapshots (600 submits): %lld copied, %.1f MB; %lld over the size left in guest memory, %.0f MB; %lld with no room; in all %lld bound again, %lld of pools the GPU writes",
++                     (long long)(st_snap_binds - l_n), (st_snap_bytes - l_b) / 1048576.0, (long long)(st_snap_big - l_big),
++                     (st_snap_big_bytes - l_bigb) / 1048576.0, (long long)st_snap_failed, (long long)st_snap_again, (long long)st_snap_gpu);
++                l_n = st_snap_binds, l_b = st_snap_bytes, l_big = st_snap_big, l_bigb = st_snap_big_bytes;
++            }
+             live_by_pool.clear();
+             // (and the bindings the GPU read in guest memory itself: pools with no mirror yet, or none (state 9: bound
+             // outside a recording))
+diff --git a/gpu/vk/vk_menu.cpp b/gpu/vk/vk_menu.cpp
+index 980eab6d..a6c67906 100644
+--- a/gpu/vk/vk_menu.cpp
++++ b/gpu/vk/vk_menu.cpp
+@@ -29,6 +29,8 @@
+ #include <unordered_map>
+ #include <system_error>
+ #include <vector>
++#include <deque>
++#include <climits>
+ 
+ #include "vk_paths.h"
+ #include "vk_menu.h"
+@@ -83,6 +85,7 @@ extern char** environ;
+ #endif
+ 
+ namespace mkwvk {
++double shader_translate_ms();   // (vk_shader.cpp: the translations so far, Deckport's shader badge)
+ int64_t slot_wait_ns();   // (vk_replay.cpp: the replay's waits for a recording slot so far, the FPS counter's Dev line)
+ int display_refresh_mhz();   // (vk_main.cpp: the window's display, asked once a second at most: the FPS counter's V-Sync target)
+ HWND app_window();
+@@ -101,7 +104,8 @@ enum MenuTab {
+     TAB_MOTION = TAB_COUNT,   // (longshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
+                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
+     TAB_FPS_DEV = TAB_MOTION + 1,   // (longshot: not a tab either, the FPS counter's Dev lines page, from the Gameplay tab)
+-    TAB_PAGE = TAB_FPS_DEV + 1   // (longshot: the Controls page's rows, above its grid; no tab shows them)
++    TAB_PAGE = TAB_FPS_DEV + 1,   // (longshot: the Controls page's rows, above its grid; no tab shows them)
++    TAB_DECKPORT = TAB_PAGE + 1   // (Deckport: as opções do menu do port, gravadas no ini; nenhuma aba as mostra)
+ };
+ 
+ struct Row {
+@@ -1803,6 +1807,11 @@ Row rows[] = {
+      "upscaler, the plain window scale without sharpening, the handheld profile, smaller textures, Intel's shaders "
+      "one at a time and quick compute builds. The handheld profile applies after a restart."},
+     // (longshot) the Gameplay tab's Bug report (vk_bug_report.h): A or Enter writes the report's folder; the help says what is in it
++    {TAB_DECKPORT, "Deckport preset", &opts.dp_preset, 0, 4, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport distance", &opts.dp_distance, 0, 4, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport grass", &opts.dp_grass, 0, 2, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport shadows", &opts.dp_shadows, 0, 2, 1, nullptr, "", nullptr, false, true},
++    {TAB_DECKPORT, "Deckport textures", &opts.dp_textures, 0, 1, 1, nullptr, "", nullptr, false, true},
+     {TAB_GAMEPLAY, "Bug report", nullptr, 0, 0, 0, nullptr,
+      "Saves what an issue needs in a new folder, bug-reports in the game folder: report.txt with the issue form's answers (this "
+      "version, where you are, your graphics card and driver, CPU, RAM and system, the options and switches you changed), the logs "
+@@ -4590,7 +4599,14 @@ float menu_ox = 0;   // (the menu's column's left edge in the window: more than
+ /// The menu: the game dimmed across the whole window, the pages in a column as wide as a 16:9 screen of this height, in the
+ /// middle (a window of 16:9 or narrower: the whole of it). The pages draw from 0 as on 16:9; their vertices and clip
+ /// rectangles are moved over after, and menu_tick moves the mouse back by menu_ox before it tests the hits
++#include "vk_deckport_menu.h"
+ void draw_menu(ui::Ctx& c) {
++    if (dp::on() && page == 0) {   // (Deckport: a tela inteira, no visual do jogo)
++        menu_ox = 0;
++        hits.clear(0, 0, c.w, c.h);
++        dp::paint(c);
++        return;
++    }
+     if (!(tune_mode && page == 0)) c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(8, 5, 2, ui::kDimAlpha));   // (the game behind, dimmed)
+     ui::Ctx k = c;
+     k.w = std::min(c.w, std::floor(c.h * 16.0f / 9.0f + 0.5f));
+@@ -5090,7 +5106,18 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
+ 
+ /// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
+ /// is under the logo at 0.86 of the logo's scale. startup_fade, 0 to 1, darkens it all to black as it ends
++#include "vk_deckport_startup.h"
++#include "vk_deckport_shaders.h"   // (Deckport: o selo dos shaders)
+ void draw_startup(ui::Ctx& c) {
++    if (dp::startup_on()) {   // (Deckport: a tela de abertura do port)
++        StartupView dv;
++        {
++            std::lock_guard lk(startup_mu);
++            dv = startup;
++        }
++        dp::paint_startup(c, dv, startup_fade.load(std::memory_order_relaxed));
++        return;
++    }
+     StartupView v;
+     {
+         std::lock_guard lk(startup_mu);
+@@ -6027,7 +6054,7 @@ void menu_tick() {
+         menu_keys::confirm_back(host->binding(HOS_BIND_PAD, HOS_SW_A, 0), host->binding(HOS_BIND_PAD, HOS_SW_B, 0), &pad_confirm,
+                                 &pad_back);
+     pad_paste = menu_keys::paste(pad_confirm, pad_back);   // (longshot: a text field's paste, on a button neither is on)
+-    if (pad(HOS_PAD_GUIDE) || chord_now) press[0] = true;
++    if (chord_now) press[0] = true;   // (Deckport: sem o Guide, o botão Steam é da Steam)
+     {   // holding an arrow or the D-pad repeats it: after 0.35 s, 12 a second, then 30 a second after 1.5 s held
+         static int64_t held_since[5], next_repeat[5];
+         const int pads[5] = {0, HOS_PAD_UP, HOS_PAD_DOWN, HOS_PAD_LEFT, HOS_PAD_RIGHT};
+@@ -6375,6 +6402,9 @@ void menu_tick() {
+             else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, kTeleports - 1);
+             if (teleport_choice != was) teleport_follow = true, changed = true;
+         }
++    } else if (open_now.load() && dp::on() && page == 0) {   // (Deckport: a navegação do menu do port)
++        const bool y_pad = listening != 1 && (pad_press >> HOS_PAD_NORTH & 1) != 0;
++        dp::tick(press, tab_left, tab_right, y_pad, mouse, mx, my, mouse ? ptr.pressed : 0, mine);
+     } else if (open_now.load()) {
+         if (mouse) {   // (the mouse: see the top of this file)
+             const menu_hit::Hit hit = hits.at((float)mx, (float)my);
+@@ -6551,7 +6581,9 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+     const bool start = startup_on.load(std::memory_order_acquire);
+     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
+     const bool open = open_now.load(std::memory_order_relaxed);
+-    if (!start && !fps && !open) {   // (nothing shows: no ImGui frame, no render pass)
++    if (start) dp::badge.last_ms = -1;   // (Deckport: o que a abertura preparou não acende o selo no primeiro quadro)
++    const float shaders = !start && dp::shaders_on() ? dp::shaders_alpha() : 0;
++    if (!start && !fps && !open && shaders <= 0) {   // (nothing shows: no ImGui frame, no render pass)
+         // (but a new window size or Menu size since the last bake: one frame with nothing drawn that bakes the menu's glyphs
+         // and measures its page for the new size, so the next open has no hitch whatever was resized while nothing showed)
+         if (prebake_needed(w, h) && ui::begin(w, h)) {
+@@ -6576,18 +6608,23 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
+     if (start) draw_startup(c);   // (under the menu)
+     if (open) draw_menu(c);
+     if (fps) draw_fps(c, open);
++    dp::draw_shaders(c, shaders);   // (Deckport: por cima de tudo, no canto de baixo à esquerda)
+     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
+     ui::record(cmd, index, w, h);
+ }
+ 
+ void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
+     const bool open = open_now.load(std::memory_order_relaxed);
+-    const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
+-    if (!open && !fps) return;
++    const bool dp_test = dp::startup_test();   // (Deckport: a tela de abertura nas capturas de teste)
++    const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire) && !dp_test;
++    const float shaders = !dp_test && dp::shaders_on() ? dp::shaders_alpha() : 0;   // (Deckport: o selo; sem tela, só este caminho desenha)
++    if (!open && !fps && !dp_test && shaders <= 0) return;
+     if (!ui::begin(w, h)) return;
+     ui::Ctx c = ui_ctx(w, h);
++    if (dp_test) draw_startup(c);
+     if (open) draw_menu(c);
+     if (fps) draw_fps(c, open);
++    dp::draw_shaders(c, shaders);
+     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
+     ui::record_to(cmd, image, view, w, h);
+ }
+diff --git a/gpu/vk/vk_menu.h b/gpu/vk/vk_menu.h
+index 6f3bdce4..05e0f801 100644
+--- a/gpu/vk/vk_menu.h
++++ b/gpu/vk/vk_menu.h
+@@ -126,6 +126,11 @@ struct Options {
+     int game_lang = 0;    // the game's language (vk_menu_i18n.h game_lang_code): language.txt's, not kept in the options file
+     int menu_lang = 0;    // this menu's language: 0 Auto (the game's own, language.txt), else menu_i18n::kLangs[menu_lang - 1]
+                           // (vk_menu_i18n.cpp). Saved as menu_language
++    int dp_preset = 1;    // (Deckport) predefinição: 0 Qualidade, 1 Equilibrado, 2 Desempenho, 3 Bateria, 4 Personalizado
++    int dp_distance = 2;  // (Deckport) distância de desenho: 0 Perto .. 4 Original (rodar-zelda.sh: o mod de vegetação)
++    int dp_grass = 0;     // (Deckport) grama: 0 50%, 1 75%, 2 original
++    int dp_shadows = 1;   // (Deckport) sombras: 0 original, 1 média (RX_VK_SHADOW_DIV=2), 2 baixa (4)
++    int dp_textures = 1;  // (Deckport) texturas: 0 altas (mod 1024), 1 médias (mod 512)
+     int mic = 1;          // (longshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)
+     int microphone_gain = 100; // software capture gain, 0..400%; leaves the system's input volume alone
+     int skip_title = 0;   // (longshot) start with the most recent save, pressing through the title and its file list (host/oot_autoload.c); read at the start
+diff --git a/gpu/vk/vk_replay.cpp b/gpu/vk/vk_replay.cpp
+index 75c27a51..3cc04e33 100644
+--- a/gpu/vk/vk_replay.cpp
++++ b/gpu/vk/vk_replay.cpp
+@@ -3983,7 +3983,17 @@ void invalidate(uint64_t gpu, uint64_t size) {
+     if (size) {
+         static const bool off = env_on("RX_VK_NO_READBACK_WAIT");
+         bool ever = false;
+-        if (!off && (memory_writeback_value(host->gpu_guest(gpu), size, &ever), ever)) {
++        // (Deckport: RX_VK_READBACK_ONLY / RX_VK_READBACK_SKIP, lists of sizes: wait only for, or for all but, those readbacks.
++        // The Deck's frame lost ~25% to the waits; OoT's exposure meter needs its wait, the culling ranges do not)
++        static const std::vector<uint64_t> rb_only = [] { std::vector<uint64_t> v; if (const char* e = getenv("RX_VK_READBACK_ONLY"))
++            for (const char* q = e; *q;) { char* end; const uint64_t x = strtoull(q, &end, 0); if (end == q) break; v.push_back(x); q = *end ? end + 1 : end; }
++            return v; }();
++        static const std::vector<uint64_t> rb_skip = [] { std::vector<uint64_t> v; if (const char* e = getenv("RX_VK_READBACK_SKIP"))
++            for (const char* q = e; *q;) { char* end; const uint64_t x = strtoull(q, &end, 0); if (end == q) break; v.push_back(x); q = *end ? end + 1 : end; }
++            return v; }();
++        const bool rb_sel = (!rb_only.empty() && std::find(rb_only.begin(), rb_only.end(), (uint64_t)size) == rb_only.end()) ||
++                            std::find(rb_skip.begin(), rb_skip.end(), (uint64_t)size) != rb_skip.end();
++        if (!off && !rb_sel && (memory_writeback_value(host->gpu_guest(gpu), size, &ever), ever)) {
+             memory_note_readback(host->gpu_guest(gpu), size);   // (PR 430: the CPU may write it back: memory_rb_refresh)
+             static std::atomic<int64_t> calls{0}, waited{0}, ns{0};
+             const auto w0 = std::chrono::steady_clock::now();
+@@ -4303,6 +4313,106 @@ bool made_shot_init() {
+     return true;
+ }
+ 
++// (Deckport) RX_VK_AFLASH=1: flashes counted without waiting for the GPU (patches/patch_aflash.py)
++constexpr uint32_t kAfW = 64, kAfH = 36, kAfRing = 8;
++VkImage af_image = VK_NULL_HANDLE;
++VmaAllocation af_image_alloc = nullptr;
++VkBuffer af_bufs[kAfRing] = {};
++VmaAllocation af_allocs[kAfRing] = {};
++void* af_maps[kAfRing] = {};
++uint64_t af_values[kAfRing] = {};
++int64_t af_presents[kAfRing] = {};
++bool aflash_on() {
++    static const bool on = getenv("RX_VK_AFLASH") && atoi(getenv("RX_VK_AFLASH")) != 0;
++    return on;
++}
++bool aflash_init();
++void aflash_read(uint64_t done);
++
++bool aflash_init() {
++    if (af_image) return true;
++    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
++    ci.imageType = VK_IMAGE_TYPE_2D;
++    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
++    ci.extent = {kAfW, kAfH, 1};
++    ci.mipLevels = ci.arrayLayers = 1;
++    ci.samples = VK_SAMPLE_COUNT_1_BIT;
++    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++    if (!create_image(ci, af_image, af_image_alloc)) return false;
++    for (uint32_t i = 0; i < kAfRing; i++)
++        if (!create_buffer((uint64_t)kAfW * kAfH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, af_bufs[i], af_allocs[i], &af_maps[i]))
++            return false;
++    logf("vk: RX_VK_AFLASH: flashes counted from a 64x36 copy of each present, read once the GPU is past it (no wait)");
++    return true;
++}
++void aflash_read(uint64_t done) {
++    // (the finished slots in present order; a gap (a slot still busy when its turn came) starts the run again)
++    static std::vector<uint8_t> fa, fb;
++    static int64_t pa = -2, pb = -2;
++    static int64_t frames = 0, flashes = 0, flashes_total = 0, up_total = 0;
++    for (;;) {
++        int pick = -1;
++        for (uint32_t i = 0; i < kAfRing; i++)
++            if (af_values[i] && af_values[i] <= done && (pick < 0 || af_presents[i] < af_presents[pick])) pick = (int)i;
++        if (pick < 0) return;
++        const uint8_t* m = (const uint8_t*)af_maps[pick];
++        std::vector<uint8_t> fc(m, m + (size_t)kAfW * kAfH * 4);
++        const int64_t pc = af_presents[pick];
++        af_values[pick] = 0;
++        frames++;
++        if (pb == pc - 1 && pa == pc - 2) {
++            int hits = 0, up = 0;
++            static std::vector<uint8_t> af_mask;   // (Deckport: RX_VK_AFLASH_DUMP)
++            af_mask.assign((size_t)kAfW * kAfH, 0);
++            for (uint32_t i = 0; i < kAfW * kAfH; i++) {
++                int dab = 0, dbc = 0, dac = 0;
++                for (int ch = 0; ch < 3; ch++) {
++                    const int a = fa[i * 4 + ch], b = fb[i * 4 + ch], c = fc[i * 4 + ch];
++                    dab = std::max(dab, std::abs(a - b)), dbc = std::max(dbc, std::abs(b - c)), dac = std::max(dac, std::abs(a - c));
++                }
++                if (dab > 48 && dbc > 48 && dac < 16) hits++, up += fb[i * 4 + 1] > fa[i * 4 + 1], af_mask[i] = 255;
++            }
++            if (hits >= 40) {
++                flashes++, flashes_total++, up_total += up * 2 > hits;
++                {   // (Deckport) RX_VK_AFLASH_DUMP=<dir>: the three frames side by side and the cells that fired, as a PPM
++                    static const char* dir = getenv("RX_VK_AFLASH_DUMP");
++                    static int dumped = 0;
++                    if (dir && dumped < 160 && (flashes_total <= 40 || flashes_total % 8 == 0)) {
++                        char path[512];
++                        snprintf(path, sizeof path, "%s/af_%08lld.ppm", dir, (long long)pb);
++                        if (FILE* f = fopen(path, "wb")) {
++                            fprintf(f, "P6\n%u %u\n255\n", kAfW * 3, kAfH * 2);
++                            const std::vector<uint8_t>* fr[3] = {&fa, &fb, &fc};
++                            for (uint32_t y = 0; y < kAfH; y++)
++                                for (int k = 0; k < 3; k++)
++                                    for (uint32_t x = 0; x < kAfW; x++) fwrite(fr[k]->data() + ((size_t)y * kAfW + x) * 4, 1, 3, f);
++                            for (uint32_t y = 0; y < kAfH; y++)
++                                for (int k = 0; k < 3; k++)
++                                    for (uint32_t x = 0; x < kAfW; x++) {
++                                        const uint8_t v = k == 1 ? af_mask[(size_t)y * kAfW + x] : 0;
++                                        const uint8_t px[3] = {v, v, v};
++                                        fwrite(px, 1, 3, f);
++                                    }
++                            fclose(f);
++                            dumped++;
++                        }
++                    }
++                }
++                static int told = 0;
++                if (told++ < 200)
++                    logf("vk: aflash at present %lld: %d of %u cells, %s", (long long)pb, hits, kAfW * kAfH,
++                         up * 2 > hits ? "brighter" : "darker");
++            }
++        }
++        pa = pb, fa.swap(fb);
++        pb = pc, fb = std::move(fc);
++        if (frames % 600 == 0) {
++            logf("vk: aflash: %lld flashes in the last 600 frames read (%lld in all, %lld brighter; %.1f per 1000)", (long long)flashes,
++                 (long long)flashes_total, (long long)up_total, flashes_total * 1000.0 / frames);
++            flashes = 0;
++        }
++    }
++}
+ bool offscreen_init() {
+     if (!shot_dimensions_ready()) return false;
+     if (off_image) return true;
+@@ -4799,7 +4909,7 @@ void status_tick() {
+         if (f) fprintf(f, "frame,ms,pipe_waits,pipe_wait_ms,left_out,translate_ms,uploads,upload_mb,textures,memsync_ms,pipelines_ms,"
+                           "uploads_ms,programs_ms,slot_wait_ms,gpu_behind_ms,draw_ms,desc_ms,cmds_ms,tex_lookup_ms,textures_gone,"
+                           "late_wait_ms,readback_wait_ms,tex_frame_ms,game_ms,render_ms,gpu_wait_ms,pace_ms,wait_render_ms,"
+-                          "wait_gpu_ms,wait_main_ms,main_cpu_ms,main_blocked_ms,main_vcore_ms,at_ns\n");
++                          "wait_gpu_ms,wait_main_ms,main_cpu_ms,main_blocked_ms,main_vcore_ms,at_ns,ab_side\n");
+         return f;
+     }();
+     if (trace && last_ns) {
+@@ -4825,8 +4935,13 @@ void status_tick() {
+         static int64_t l_mt[3];
+         int64_t mt[3] = {0, 0, 0};
+         if (host->main_thread_times) host->main_thread_times(mt);
++        // (Deckport, Longshot #1661: the frame's side in an A/B within the run, HOS_AB; scripts/ab_summary.py)
++        static int64_t l_at;
++        const int64_t at = host->now_ns ? host->now_ns() : 0;
++        const int ab_side = host->version >= 30 && host->ab_frame ? host->ab_frame(l_at, at) : -1;
++        l_at = at;
+         fprintf(trace, "%llu,%.2f,%lld,%.2f,%lld,%.1f,%lld,%.2f,%zu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f,"
+-                       "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%lld\n",
++                       "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%lld,%d\n",
+                 (unsigned long long)frames, (now_ns - last_ns) / 1e6, (long long)(pw - l_pw), pwms - l_pwms, (long long)(ps - l_ps),
+                 tr - l_tr, (long long)(up - l_up), (upb - l_upb) / 1048576.0, texture_count(), dp(PROF_MEMSYNC), dp(PROF_PIPE),
+                 dp(PROF_UPLOAD), dp(PROF_PROGRAM), dp(PROF_SLOTWAIT), (st_wait_ns - l_wait) / 1e6, dp(PROF_DRAW), dp(PROF_DESC),
+@@ -4836,7 +4951,7 @@ void status_tick() {
+                 (mt[2] - l_mt[2]) / 1e6, (mt[1] - l_mt[1]) / 1e6, (mt[0] - l_mt[0]) / 1e6,
+                 // (at_ns: this present on the host's clock, hos_now_ns: the clock of the profile's samples, presents.csv and
+                 // events.txt, so a frame is found in them)
+-                (long long)(host->now_ns ? host->now_ns() : 0));
++                (long long)at, ab_side);
+         l_gone = gone, l_late = late, l_rb = rb, l_tf = tf;
+         std::memcpy(l_mt, mt, sizeof l_mt);
+         if (frames % 60 == 0) fflush(trace);
+@@ -5103,6 +5218,18 @@ void do_present(const nvn_tex* t, const int crop[4]) {
+         }
+         ts_anchor_ns = host->ticks() * 32;
+         dump_present(presents);
++        if (aflash_on()) {   // (Deckport: RX_VK_AFLASH)
++            aflash_read(vk_timeline_completed());
++            const uint32_t slot = (uint32_t)(presents % kAfRing);
++            if (src && !af_values[slot] && aflash_init()) {
++                image_barrier(r.cmd, af_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
++                blit_crop(r.cmd, src, sw, sh, crop, af_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kAfW, kAfH);
++                image_barrier(r.cmd, af_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++                const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kAfW, kAfH, 1}};
++                vkCmdCopyImageToBuffer(r.cmd, af_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, af_bufs[slot], 1, &c);
++                af_values[slot] = value, af_presents[slot] = presents;
++            }
++        }
+         if (src && (dev.offscreen || shots) && offscreen_init()) {
+             if (dev.offscreen) {
+                 image_barrier(r.cmd, off_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+@@ -5198,13 +5325,14 @@ void do_present(const nvn_tex* t, const int crop[4]) {
+                 const long count = e ? std::strtol(e, nullptr, 10) : 0;
+                 constexpr long capacity = sizeof(values) / sizeof(values[0]);
+                 if (count > capacity) logf("vk: RX_VK_WAIT_GPU=%ld exceeds the ring capacity; using %ld", count, capacity);
+-                return (int)std::clamp<long>(count, 0, capacity);
++                return (int)std::clamp<long>(count, -1, capacity);   // (Deckport: -1 kept, the frame itself; v2.0.12 clamped it to 0)
+             }();
+             if (ahead > 0) {
+                 const uint64_t old = values[presents % ahead];
+                 values[presents % ahead] = value;
+                 if (old) wait_value(old);
+             }
++            else if (ahead < 0) wait_value(value);   // (Deckport: -1, o próprio quadro, issue #1186)
+         }
+         if (presents % 300 == 0) pipeline_cache_save(false);
+         {   // (RX_VK_DUMP_KEY: F9 dumps the next frame, 8 times at most)
+diff --git a/gpu/vk/vk_shader.cpp b/gpu/vk/vk_shader.cpp
+index c61dae40..46207470 100644
+--- a/gpu/vk/vk_shader.cpp
++++ b/gpu/vk/vk_shader.cpp
+@@ -1208,7 +1208,8 @@ void dump_ir(const Program& p, const char* stage, const Shader::IR::Program& pro
+ // Deck plays with RX_VK_MESH_NOCULL=2c56dc1006942f74 (issue 817). A name under RX_VK_MESH, so the program cache starts
+ // again when it changes.
+ bool mesh_nocull_wanted(uint64_t code_key) {
+-    static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "";
++    // (Deckport: on by default for the Steam Deck cull task, issue 817; RX_VK_MESH_NOCULL=0 turns it off)
++    static const std::string list = getenv("RX_VK_MESH_NOCULL") ? getenv("RX_VK_MESH_NOCULL") : "2c56dc1006942f74";
+     if (list.empty() || list == "0") return false;
+     char hex[24];
+     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)code_key);
+@@ -1271,7 +1272,37 @@ void mesh_nocull(Shader::IR::Program& program, uint64_t code_key) {
+             inst.ReplaceUsesWith(Value{true});
+             made++;
+         }
++    int grid = 0;   // (Deckport, patches/patch_nocull_grid.py: a grade de uma célula só, o laço roda uma vez)
++    static const bool grid_on = !getenv("RX_VK_MESH_NOCULL_GRID") || atoi(getenv("RX_VK_MESH_NOCULL_GRID")) != 0;
++    if (made && grid_on)
++        for (Block* block : program.blocks)
++            for (Inst& inst : block->Instructions()) {
++                const Opcode op = inst.GetOpcode();
++                // (o shader lê largura e altura juntas, GetCbufU32x2 #3, #3088, e tira cada uma com CompositeExtractU32x2:
++                // o limite do laço é min(..., largura - 1). Com 1, o laço roda uma vez)
++                if (op == Opcode::CompositeExtractU32x2) {
++                    const Value src = inst.Arg(0).Resolve();
++                    if (src.IsImmediate()) continue;
++                    const Inst* c = src.InstRecursive();
++                    if (c->GetOpcode() != Opcode::GetCbufU32x2) continue;
++                    const Value bank = c->Arg(0).Resolve(), off = c->Arg(1).Resolve();
++                    if (!bank.IsImmediate() || !off.IsImmediate() || bank.U32() != 3 || off.U32() != 3088) continue;
++                    inst.ReplaceUsesWith(Value{1u});
++                    grid++;
++                    continue;
++                }
++                if (op != Opcode::GetCbufU32 && op != Opcode::GetCbufF32) continue;
++                const Value bank = inst.Arg(0).Resolve(), off = inst.Arg(1).Resolve();
++                if (!bank.IsImmediate() || !off.IsImmediate() || bank.U32() != 3) continue;
++                if (off.U32() != 3088 && off.U32() != 3092) continue;
++                inst.ReplaceUsesWith(op == Opcode::GetCbufF32 ? Value{1.0f} : Value{1u});
++                grid++;
++            }
+     if (made) Shader::Optimization::DeadCodeEliminationPass(program);
++    if (grid) {
++        static std::atomic<int> told_grid{0};
++        if (told_grid++ < 8) logf("vk: task code %016llx: grid read %d times, made 1x1 (RX_VK_MESH_NOCULL_GRID)", (unsigned long long)code_key, grid);
++    }
+     static std::atomic<int> told{0};
+     if (told++ < 8)
+         logf("vk: task code %016llx: culling %s (RX_VK_MESH_NOCULL)", (unsigned long long)code_key,
+@@ -1292,6 +1323,7 @@ uint64_t translator_stamp() {
+     // lost it)
+     const uint64_t translator = LONGSHOT_SHADER_STAMP;
+     add(&translator, sizeof translator);
++    if (!getenv("RX_VK_MESH_NOCULL_GRID") || atoi(getenv("RX_VK_MESH_NOCULL_GRID")) != 0) add("deckport-grid-2", 15);   // (patch_nocull_grid.py)
+     const uint32_t depth = host->depth_minus_w() != 0;   // (d3zessete's PR 54: programs made in either depth mode are kept apart)
+     add(&depth, sizeof depth);
+     // (and a GPU's mesh shaders: a file of native task and mesh programs is no use to the compute fallback, nor its to one)
+diff --git a/gpu/vk/vk_texture.cpp b/gpu/vk/vk_texture.cpp
+index 18a08420..3f5db510 100644
+--- a/gpu/vk/vk_texture.cpp
++++ b/gpu/vk/vk_texture.cpp
+@@ -1791,6 +1791,50 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
+     if (tex.astc && (up_route = UP_ASTC, upload_astc_gpu(tex, total, dirty))) return true;
+     up_route = UP_CPU;
+     if (tex.bc) return false;   // (no CPU path into BC3)
++    if (tex.shrink) {   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape: cleared once, never uploaded)
++        if (!tex.uploaded) {
++            VkCommandBuffer cmd = upload_cmd();
++            full_barrier(cmd);
++            const VkClearDepthStencilValue z{0.0f, 0};
++            const VkImageSubresourceRange r{VK_IMAGE_ASPECT_DEPTH_BIT, 0, tex.levels, 0, tex.layers};
++            vkCmdClearDepthStencilImage(cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r);
++            full_barrier(cmd);
++        }
++        return up_route = UP_GPU, true;
++    }
++    {   // (Deckport, patches/patch_depthzero.py) a new big depth target still all zero: cleared on the GPU, not unswizzled on
++        // the CPU (the 12288x12288 shadow target as the castle loads: 3.5 s on the Deck)
++        static const bool on = !getenv("RX_VK_DEPTH_ZERO") || atoi(getenv("RX_VK_DEPTH_ZERO")) != 0;
++        if (on && !dirty && !tex.uploaded && is_depth_format(tex.format) && !(tex.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
++            total >= (16u << 20) && !(tex.gpu < (1ull << 40) && memory_has_shadow(tex.gpu, total))) {
++            bool zero = true;
++            std::vector<uint8_t> part;
++            for (uint64_t at = 0; at < total && zero; at += (1u << 20)) {
++                const uint64_t n = std::min<uint64_t>(1u << 20, total - at);
++                uint64_t avail = 0;
++                const uint8_t* d = host->gpu_ptr(tex.gpu + at, &avail);
++                if (!d || avail < n) part.assign(n, 1), host->gpu_read(tex.gpu + at, part.data(), n), d = part.data();
++                const uint64_t* w = (const uint64_t*)d;
++                for (uint64_t i = 0; i < n / 8; i++)
++                    if (w[i]) { zero = false; break; }
++                for (uint64_t i = n / 8 * 8; zero && i < n; i++)
++                    if (d[i]) zero = false;
++            }
++            if (zero) {
++                VkCommandBuffer cmd = upload_cmd();
++                full_barrier(cmd);
++                const VkClearDepthStencilValue z{0.0f, 0};
++                const VkImageSubresourceRange r{VK_IMAGE_ASPECT_DEPTH_BIT, 0, tex.levels, 0, tex.layers};
++                vkCmdClearDepthStencilImage(cmd, tex.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r);
++                full_barrier(cmd);
++                static int told;
++                if (told++ < 20)
++                    logf("vk: depth target #%u %ux%u NVN %#x (%llu MB) all zero: cleared on the GPU, not uploaded (RX_VK_DEPTH_ZERO)",
++                         tex.id, tex.width, tex.height, tex.nvn_format, (unsigned long long)(total >> 20));
++                return up_route = UP_GPU, true;
++            }
++        }
++    }
+     // (the GPU's unswizzle reads guest memory as it is: not where the capture kept the storage as it was at its submit)
+     if (!(tex.gpu < (1ull << 40) && memory_has_shadow(tex.gpu, total)) && upload_unswizzle_gpu(tex, total, dirty))
+         return up_route = UP_GPU, true;
+@@ -2406,6 +2450,18 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
+         flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
+         if (dev.view_2d_of_3d) flags |= VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
+     }
++    {   // (Deckport, patches/patch_shadowdiv.py: the 12288 x 12288 shadow map made smaller)
++        static const uint32_t sdiv = getenv("RX_VK_SHADOW_DIV") ? (uint32_t)std::max(1, atoi(getenv("RX_VK_SHADOW_DIV"))) : 2u;
++        if (sdiv > 1 && is_depth_format(x.format) && !(x.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
++            x.type == VK_IMAGE_TYPE_2D && x.levels == 1 && x.layers == 1 && x.samples == VK_SAMPLE_COUNT_1_BIT &&
++            !x.sparse && x.width >= 8192 && x.height >= 8192) {
++            static int told;
++            if (told++ < 8)
++                logf("vk: depth target %ux%u made %ux%u (RX_VK_SHADOW_DIV=%u: its passes' viewport and scissor divided)", x.width,
++                     x.height, x.width / sdiv, x.height / sdiv, sdiv);
++            x.width /= sdiv, x.height /= sdiv, x.shrink = sdiv;
++        }
++    }
+     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+     ci.flags = flags;
+     ci.imageType = x.type;
+@@ -3412,6 +3468,7 @@ bool flush_uncached() {
+ bool flush_record(Flush& f, VkCommandBuffer cmd = VK_NULL_HANDLE) {
+     if (!cmd) cmd = rb_cmd;
+     Texture& t = *f.t;
++    if (t.shrink) return f.ok = false;   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape)
+     const uint32_t layers = t.type == VK_IMAGE_TYPE_3D ? 1 : t.layers;
+     for (uint32_t level = 0; level < t.levels; level++) {
+         const LevelGeo g = level_geo(t, level);
+diff --git a/gpu/vk/vk_texture.h b/gpu/vk/vk_texture.h
+index 1410f779..3728414d 100644
+--- a/gpu/vk/vk_texture.h
++++ b/gpu/vk/vk_texture.h
+@@ -29,6 +29,7 @@ struct Texture {
+     VkImageCreateFlags create_flags = 0;   // (longshot: as its image was made, for the compaction's copy of it)
+     uint32_t width = 1, height = 1, depth = 1, levels = 1, layers = 1;   // the image's (after skip)
+     uint32_t skip = 0;        // top levels of the texture left out (huge textures: RX_VK_TEX_MAX_DIM, _MAX_MB)
++    uint32_t shrink = 0;      // (Deckport, RX_VK_SHADOW_DIV) a huge depth target made 1/shrink of its size
+     // (a huge array kept whole as a sparse resident image instead: each layer gets device memory when it is first
+     // written, so only what the game streams in costs VRAM. MKW's terrain arrays, 8192 x 8192 x 68 BC6H: 5.8 GB
+     // each, written by the GPU's copies into level 0, which a texture with its top level left out lost)
+diff --git a/gpu/vk/vk_xfer.cpp b/gpu/vk/vk_xfer.cpp
+index bbd02ea9..3e9b603a 100644
+--- a/gpu/vk/vk_xfer.cpp
++++ b/gpu/vk/vk_xfer.cpp
+@@ -175,6 +175,11 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_bt& p, bool to
+     // it fills is kept (texture_frame: a texture the GPU filled once is not evicted). RX_VK_B2T_CPU=1: on the CPU too)
+     static const bool b2t_gpu = !env_on("RX_VK_B2T_CPU");
+     const bool astc = to_image && p.tex && vk_format(view_nvn_format(p.tex, p.has_view ? &p.view : nullptr)).astc;
++    if (p.tex)
++        if (Texture* st_ = texture_get(p.tex, false); st_ && st_->shrink) {   // (Deckport, RX_VK_SHADOW_DIV)
++            warn(9, "buffer copy with a shrunk depth target (RX_VK_SHADOW_DIV): skipped");
++            return;
++        }
+     if (to_image && p.tex) {   // (RX_VK_LOG_BIG_COPY)
+         if (Texture* t = texture_get(p.tex, false))
+             log_big_copy(b2t_gpu && !astc ? "buffer (GPU)" : "buffer (CPU)", t, view_level(p.has_view ? &p.view : nullptr),
+@@ -244,6 +249,10 @@ void copy_t2t(VkCommandBuffer cmd, NvnState& st, const nvn_p_copy_tt& p) {
+     Sub s, d;
+     if (!resolve(p.src, &p.sv, p.has_sv != 0, p.sr, s, true)) return;
+     if (!resolve(p.dst, &p.dv, p.has_dv != 0, p.dr, d, true)) return;
++    if (s.tex->shrink || d.tex->shrink) {   // (Deckport, RX_VK_SHADOW_DIV: not the guest's shape)
++        warn(8, "texture copy with a shrunk depth target (RX_VK_SHADOW_DIV): skipped");
++        return;
++    }
+     {   // (RX_VK_LOG_COPY: the texture copies, 400 of them)
+         static const bool log_copy = env_on("RX_VK_LOG_COPY");
+         static int logged;
+diff --git a/host/hos.h b/host/hos.h
+index 0f1672fa..efc8001f 100644
+--- a/host/hos.h
++++ b/host/hos.h
+@@ -116,6 +116,23 @@ int hos_slow_frames_every_ms(void);
+ void hos_slow_frame_present(void);
+ void hos_slow_sample(int64_t sweep_ns, const char *text);
+ void hos_slow_sweep_done(void);
++/* (longshot) an A/B within one run (host/hos_ab.c, HOS_AB=<switch>=<value>[,<seconds>[,<warm-up seconds>]]): the side now,
++   -1 when no A/B runs or in its warm-up, else 0 (the switch's normal value) or 1 (the A/B's value): one relaxed load, cheap
++   enough for a per-call path. A switch's reader takes the A/B as v = hos_ab_value(<its name, a literal>, v_normal): v_normal
++   unless the A/B names that switch and side 1 runs. Both sides pay the same for the call (a load, then a look at a small
++   table of the names seen, by address), so the measured difference is the switch's. hos_ab_frame: the side of a frame from
++   from_ns to to_ns (hos_now_ns), + 2 in a transition (a flip in the frame, or less than 0.3 s before its end), -1 outside */
++extern int hos_ab_side_now;
++static inline int hos_ab_side(void) { return __atomic_load_n(&hos_ab_side_now, __ATOMIC_RELAXED); }
++int hos_ab_value_at(const char *name, int normal, int side);
++static inline int hos_ab_value(const char *name, int normal) {
++    const int side = hos_ab_side();
++    return side < 0 ? normal : hos_ab_value_at(name, normal, side);
++}
++int hos_ab_frame(int64_t from_ns, int64_t to_ns);
++void hos_ab_start(void);     /* (hos_main.c, before the game's threads) */
++void hos_ab_present(void);   /* (rx_nvn_present: the host's per-side sums) */
++void hos_ab_end(void);       /* (hos_close_finish: their line in the log) */
+ /* (longshot) the profiling mode (host/profiling.c, HOS_PROFILE=1): its folder (NULL: off), its switches set (after
+    longshot_env.txt), its threads started (hos_prof_start), a timed event into its events.txt, and a sampler's line written
+    (packed with HOS_SAMPLE_PACKED) */
+diff --git a/host/hos_ab.c b/host/hos_ab.c
+new file mode 100644
+index 00000000..ce15040a
+--- /dev/null
++++ b/host/hos_ab.c
+@@ -0,0 +1,230 @@
++/* (longshot) An A/B within one run: HOS_AB=<switch>=<value>[,<seconds>[,<warm-up seconds>]].
++
++   Two runs of the same build differ by a few fps (the PC's other work, its clocks, where the game's threads land), more than
++   the 2-5 % a change is often worth. Here one run measures both sides: after the warm-up (20 s from the start of the process),
++   the named switch alternates every period (3 s) between its normal value (side 0, first) and <value> (side 1), and each
++   frame is counted for the side it ran on, so whatever drifts slower than a period cancels. The idea is the A/B blocks of
++   dkb-pc-recomp's runtime/perf.c (TOTK_AB); the code is Longshot's own.
++
++   A switch takes part when its reader asks hos_ab_value (host/hos.h) each time it is used, instead of only its value cached
++   at the start: host/rx_backend.c's collect_in (HOS_COLLECT_WIDE) does, and tests/test_hos_ab.py lists every reader that
++   does. Only a switch that can change between two calls without breaking what the other value built may be wired so; a
++   switch whose value sets something up once, at the start or at the lift, may not.
++
++   The side changes on a thread of its own (a sleep to the next flip on the host's clock, hos_now_ns), never at a present.
++   The frame trace (RX_VK_FRAME_TRACE) gets each frame's side as its ab_side column (MkwVkHost.ab_frame): -1 outside the A/B,
++   0 or 1, and 2 or 3 for that side's frames in a transition (a flip inside the frame, or less than AB_SETTLE_NS before its
++   end), which scripts/ab_summary.py leaves out. The host also sums the presents' intervals by side (rx_nvn_present) and logs
++   the sums at the end of the run (hos_close_finish): "ab: ...". docs/development.md, "An A/B within one run". */
++#include "hos.h"
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++void hos_host_thread_register_self(const char *name);   /* (mkw_glue.c: the thread's name) */
++
++#define AB_SETTLE_NS 300000000LL   /* (a frame that ends this soon after a flip is the transition's) */
++#define AB_PERIOD_S 3.0
++#define AB_WARM_S 20.0
++
++int hos_ab_side_now = -1;   /* (hos_ab_side: written by the A/B's thread alone) */
++
++typedef struct AbPlan {
++    int on, value;
++    char name[64];
++    int64_t t0, warm, period;   /* (ns: the start, the warm-up, a period) */
++    double period_s, warm_s;
++} AbPlan;
++/* (set before the game's threads start, by hos_ab_start on the main thread, and not changed after: read without a lock) */
++static AbPlan ab;
++static int ab_read;   /* (a reader named the switch during the A/B: hos_ab_value_at) */
++/* the names hos_ab_value_at has seen, by the literal's address: (address << 1) | 1 when it names the A/B's switch. One word a
++   slot, so a slot read is whole; a slot two names share is looked up again with strcmp, and nothing else is lost */
++static uintptr_t ab_seen[16];
++static int64_t ab_last_present;
++static int64_t ab_frames[4], ab_ns[4];   /* (the host's presents by hos_ab_frame's answer: 0, 1, 2, 3) */
++static int ab_ended;
++
++/* ---- the plan: HOS_AB's text read; 0 and a log line saying what is wrong, the run without an A/B */
++static int ab_seconds(const char *s, size_t n, double lo, double hi, double *out) {
++    char b[32];
++    if (!n || n >= sizeof b) return 0;
++    memcpy(b, s, n);
++    b[n] = 0;
++    char *end;
++    const double v = strtod(b, &end);
++    if (end != b + n || !(v >= lo && v <= hi)) return 0;   /* (a NaN fails both) */
++    *out = v;
++    return 1;
++}
++static int ab_parse(const char *text, AbPlan *p) {
++    memset(p, 0, sizeof *p);
++    p->period_s = AB_PERIOD_S, p->warm_s = AB_WARM_S;
++    const char *why = NULL, *eq = strchr(text, '=');
++    const size_t n = eq ? (size_t)(eq - text) : 0;
++    if (!eq || !n) why = "not <switch>=<value>[,<seconds>[,<warm-up seconds>]]";
++    else if (n >= sizeof p->name) why = "the switch's name is too long";
++    else if (text[0] < 'A' || text[0] > 'Z') why = "the switch's name does not start with a capital";
++    for (size_t i = 0; !why && i < n; i++)
++        if (!((text[i] >= 'A' && text[i] <= 'Z') || (text[i] >= '0' && text[i] <= '9') || text[i] == '_'))
++            why = "the switch's name has other than capitals, digits and _";
++    const char *f[3] = {eq ? eq + 1 : text, NULL, NULL};   /* (the value, the period, the warm-up) */
++    size_t len[3] = {0, 0, 0};
++    int fields = 0;
++    for (const char *s = f[0]; !why;) {
++        const char *c = strchr(s, ',');
++        if (fields == 3) {
++            why = "more than three fields after the =";
++            break;
++        }
++        f[fields] = s, len[fields] = c ? (size_t)(c - s) : strlen(s), fields++;
++        if (!c) break;
++        s = c + 1;
++    }
++    if (!why) {
++        char b[24], *end = NULL;
++        long v = 0;
++        if (len[0] && len[0] < sizeof b) {
++            memcpy(b, f[0], len[0]);
++            b[len[0]] = 0;
++            v = strtol(b, &end, 10);
++        }
++        if (!len[0] || len[0] >= sizeof b || end != b + len[0] || v < -1000000000L || v > 1000000000L)
++            why = "the value is not a whole number (the A/B gives the switch a number)";
++        p->value = (int)v;
++    }
++    if (!why && fields > 1 && !ab_seconds(f[1], len[1], 1, 3600, &p->period_s))
++        why = "the period is not a number of seconds from 1 to 3600";
++    if (!why && fields > 2 && !ab_seconds(f[2], len[2], 0, 86400, &p->warm_s))
++        why = "the warm-up is not a number of seconds from 0 to 86400";
++    if (why) {
++        hos_log("ab: HOS_AB=%.120s: %s: no A/B in this run", text, why);
++        return 0;
++    }
++    memcpy(p->name, text, n);
++    p->name[n] = 0;
++    p->period = (int64_t)(p->period_s * 1e9);
++    p->warm = (int64_t)(p->warm_s * 1e9);
++    return 1;
++}
++
++/* ---- the schedule: periods of p->period from the warm-up's end, side 0 first */
++static int ab_side_at(const AbPlan *p, int64_t t) {
++    if (!__atomic_load_n(&p->on, __ATOMIC_ACQUIRE) || t < p->t0 + p->warm) return -1;
++    return (int)(((t - p->t0 - p->warm) / p->period) & 1);
++}
++static int64_t ab_period_start(const AbPlan *p, int64_t t) {   /* (t at or after the warm-up's end) */
++    return p->t0 + p->warm + (t - p->t0 - p->warm) / p->period * p->period;
++}
++/* the frame from from_ns to to_ns: its side by its end, + 2 when the period began inside it or less than AB_SETTLE_NS before
++   its end (from_ns 0: not known, a transition) */
++int hos_ab_frame(int64_t from_ns, int64_t to_ns) {
++    const int side = ab_side_at(&ab, to_ns);
++    if (side < 0) return -1;
++    const int64_t start = ab_period_start(&ab, to_ns);
++    return side + (from_ns < start || to_ns - start < AB_SETTLE_NS ? 2 : 0);
++}
++static int hos_ab_summary(char *out, size_t cap);
++/* the side at now made the one hos_ab_side says; the time of the next change */
++static int64_t hos_ab_tick(int64_t now) {
++    if (!ab.on) return INT64_MAX;
++    const int side = ab_side_at(&ab, now);
++    const int was = __atomic_exchange_n(&hos_ab_side_now, side, __ATOMIC_RELAXED);
++    if (side != was && was < 0)
++        hos_log("ab: the warm-up is over: %s alternates now, its normal value and %d, %.1f s each", ab.name, ab.value, ab.period_s);
++    else if (side != was && side == 0 && ((now - ab.t0 - ab.warm) / ab.period) % 20 == 0) {
++        char line[768];   /* (Deckport: the sums so far every 20 periods, so a run a timeout kills logs them too) */
++        hos_ab_summary(line, sizeof line);
++        hos_log("%s (so far)", line);
++    } else if (side != was)
++        hos_log_at(HOS_LOG_DEBUG, "ab: side %d (%s %s)", side, ab.name, side ? "the A/B's value" : "its normal value");
++    return side < 0 ? ab.t0 + ab.warm : ab_period_start(&ab, now) + ab.period;
++}
++/* the A/B set up from text, the warm-up counted from now (1), or none (0: no text, or a line said what is wrong) */
++static int hos_ab_setup(const char *text, int64_t now) {
++    AbPlan p;
++    if (!text || !*text || !ab_parse(text, &p)) return 0;
++    p.t0 = now;
++    ab = p;
++    __atomic_store_n(&ab.on, 1, __ATOMIC_RELEASE);   /* (the plan whole before a thread that reads it sees it on) */
++    __atomic_store_n(&hos_ab_side_now, -1, __ATOMIC_RELAXED);
++    hos_log("ab: HOS_AB: after %.0f s of warm-up, %s alternates every %.1f s between its normal value (side 0, first) and %d "
++            "(side 1); the frame trace (RX_VK_FRAME_TRACE) has each frame's side in its ab_side column (scripts/ab_summary.py)",
++            ab.warm_s, ab.name, ab.period_s, ab.value);
++    return 1;
++}
++
++/* ---- the switches' side: hos_ab_value (host/hos.h) when an A/B runs */
++int hos_ab_value_at(const char *name, int normal, int side) {
++    const uintptr_t p = (uintptr_t)name;
++    uintptr_t *slot = &ab_seen[(p ^ p >> 5 ^ p >> 11) & 15];
++    uintptr_t e = __atomic_load_n(slot, __ATOMIC_RELAXED);
++    if (e >> 1 != p) {   /* (a name not seen yet: once a call site, or after another took the slot) */
++        const int match = !strcmp(name, ab.name);
++        if (match) __atomic_store_n(&ab_read, 1, __ATOMIC_RELAXED);
++        e = p << 1 | (uintptr_t)match;
++        __atomic_store_n(slot, e, __ATOMIC_RELAXED);
++    }
++    return (e & 1) && side == 1 ? ab.value : normal;
++}
++int hos_ab(void) { return hos_ab_side() == 1; }   /* (TOTKPort's hos_prof.c name, which mkw_glue.c stood in for: side 1 runs) */
++
++/* ---- the host's sums: every present's interval by its side (rx_nvn_present, the thread that presents) */
++void hos_ab_present(void) {
++    if (!__atomic_load_n(&ab.on, __ATOMIC_ACQUIRE)) return;
++    const int64_t now = hos_now_ns(), from = __atomic_exchange_n(&ab_last_present, now, __ATOMIC_RELAXED);
++    const int s = from ? hos_ab_frame(from, now) : -1;
++    if (s < 0) return;
++    __atomic_add_fetch(&ab_frames[s], 1, __ATOMIC_RELAXED);
++    __atomic_add_fetch(&ab_ns[s], now - from, __ATOMIC_RELAXED);
++}
++/* their line: each side's frames and mean frame time, the transitions left out */
++static int hos_ab_summary(char *out, size_t cap) {
++    int64_t n[4], ns[4];
++    for (int i = 0; i < 4; i++) n[i] = __atomic_load_n(&ab_frames[i], __ATOMIC_RELAXED), ns[i] = __atomic_load_n(&ab_ns[i], __ATOMIC_RELAXED);
++    const double m0 = n[0] ? ns[0] / 1e6 / n[0] : 0, m1 = n[1] ? ns[1] / 1e6 / n[1] : 0;
++    int at = snprintf(out, cap, "ab: %s=%d against its normal value, %.1f s periods after %.0f s: ", ab.name, ab.value, ab.period_s,
++                      ab.warm_s);
++    for (int s = 0; s < 2 && at < (int)cap; s++) {
++        const double m = s ? m1 : m0;
++        at += n[s] ? snprintf(out + at, cap - at, "side %d (%s) %lld frames, %.3f ms a frame (%.1f fps); ", s,
++                              s ? "the A/B's value" : "normal", (long long)n[s], m, 1000 / m)
++                   : snprintf(out + at, cap - at, "side %d: no frames; ", s);
++    }
++    if (at < (int)cap && n[0] && n[1])
++        at += snprintf(out + at, cap - at, "side 1 %+.2f %% frame time; ", 100 * (m1 - m0) / m0);
++    if (at < (int)cap)
++        at += snprintf(out + at, cap - at, "%lld frames in transitions left out (the host's presents; scripts/ab_summary.py "
++                                           "on the frame trace for medians and a confidence interval)", (long long)(n[2] + n[3]));
++    if (at < (int)cap && !__atomic_load_n(&ab_read, __ATOMIC_RELAXED))
++        at += snprintf(out + at, cap - at, "; %s was never read during the A/B: no switch of that name takes part, both sides "
++                                           "ran the same", ab.name);
++    return at;
++}
++void hos_ab_end(void) {   /* (once, at the end of the run) */
++    if (!ab.on || __atomic_exchange_n(&ab_ended, 1, __ATOMIC_RELAXED)) return;
++    char line[768];
++    hos_ab_summary(line, sizeof line);
++    hos_log("%s", line);
++}
++
++/* ---- the thread that flips the side */
++static DWORD WINAPI ab_main(void *arg) {
++    (void)arg;
++    hos_host_thread_register_self("A/B");
++    for (;;) {
++        const int64_t now = hos_now_ns(), next = hos_ab_tick(now), ms = (next - now + 999999) / 1000000;
++        Sleep((DWORD)(ms < 1 ? 1 : ms > 60000 ? 60000 : ms));
++    }
++    return 0;
++}
++void hos_ab_start(void) {
++    if (!hos_ab_setup(getenv("HOS_AB"), hos_now_ns())) return;
++    if (!CreateThread(NULL, 64u << 10, ab_main, NULL, 0, NULL)) {
++        __atomic_store_n(&ab.on, 0, __ATOMIC_RELEASE);
++        hos_log("ab: the A/B's thread did not start: no A/B in this run");
++    }
++}
+diff --git a/host/hos_main.c b/host/hos_main.c
+index b0909bba..b9508c1e 100644
+--- a/host/hos_main.c
++++ b/host/hos_main.c
+@@ -2142,6 +2142,7 @@ static int game_main(int argc, char **argv) {
+     hos_prof_start();   /* HOS_PROFILE_EVERY=<seconds>, the samplers, HOS_PROFILE=1 */
+     void hos_chain_start(void);
+     hos_chain_start();  /* HOS_CHAIN=<path> */
++    hos_ab_start();     /* (longshot) HOS_AB=<switch>=<value>: an A/B within the run (host/hos_ab.c), before the game's threads */
+ #ifdef _WIN32
+     timeBeginPeriod(1);   /* 1 ms timer resolution: the 60 Hz vsync and the game's frame pacing sleep in short steps */
+     no_power_throttling();
+diff --git a/host/hos_relaunch.c b/host/hos_relaunch.c
+index a7e1df6c..4a075b9e 100644
+--- a/host/hos_relaunch.c
++++ b/host/hos_relaunch.c
+@@ -167,6 +167,7 @@ static void relaunch(void) {
+    keep its watchdog alive until all explicit close work and the log flush have returned. */
+ void hos_close_finish(void) {
+     hos_log("stop: close work done (the game's saves are not waited for)");
++    hos_ab_end();   /* (Deckport, Longshot #1661: HOS_AB's sums in the log) */
+     hos_log_flush();
+     void hos_crash_clean_end(void);
+     hos_crash_clean_end();
+diff --git a/host/hos_thread.c b/host/hos_thread.c
+index bf5b3a7d..9c31b343 100644
+--- a/host/hos_thread.c
++++ b/host/hos_thread.c
+@@ -1334,9 +1334,24 @@ HLE(_ZN2nn2os19GetCurrentStackInfoEPmS1_) {
+     if (ARG(1)) G64(ARG(1)) = cur->stack_size;
+ }
+ 
++/* (longshot) nn::os::YieldThread gives up the virtual core only, not the processor (HOS_OS_YIELD=1: SwitchToThread as
++   well, as before; HOS_AB may flip it, each yield deciding alone). OoT yields after every job and actor callback. On a
++   PC of 4 cores in Castle Town's market the job threads' CPU time was about their running time plus their time inside
++   SwitchToThread (the six BaseProc executors 107 % of a core measured, 45.5 % of it running, 51.6 % in SwitchToThread):
++   kernel time handing the processor to another thread and taking it back, about 0.75 of the four processors over the
++   job threads. hos_vcore_yield already hands the virtual core to a waiting game thread of better or equal priority, which
++   is what the game's yield asks for; the OS still moves threads between processors at the end of their time slices. */
++static int os_yield(void) {
++    static int v = -1;
++    if (v < 0) {
++        const char *e = getenv("HOS_OS_YIELD");
++        v = e && !env_value_off(e);
++    }
++    return hos_ab_value("HOS_OS_YIELD", v);
++}
+ HLE(_ZN2nn2os11YieldThreadEv) {
+     hos_vcore_yield();
+-    SwitchToThread();
++    if (os_yield()) SwitchToThread();
+ }
+ /* HOS_SLEEP_LOG=1 (diagnostic): guest sleeps by caller (LR) every 5 s: count, asked, slept */
+ void hos_sleep_logged(int64_t ns, uint64_t lr) {
+diff --git a/host/mkw_glue.c b/host/mkw_glue.c
+index 42b36557..094a6294 100644
+--- a/host/mkw_glue.c
++++ b/host/mkw_glue.c
+@@ -937,8 +937,8 @@ uint64_t a64_cntpct_host(void) {
+     return (uint64_t)(((unsigned __int128)(uint64_t)(now.QuadPart - base.QuadPart) * mult) >> 32);
+ }
+ 
+-/* ---- what the renderer (gpu/render, TOTKPort's) asks of TOTKPort's hos_prof.c and totk_ultrawide.c ---- */
+-int hos_ab(void) { return 0; }                    /* (hos_prof.c: A/B measurement phases) */
++/* ---- what the renderer (gpu/render, TOTKPort's) asks of TOTKPort's hos_prof.c and totk_ultrawide.c ----
++   (longshot: hos_ab, the A/B measurement phases, is host/hos_ab.c's now) */
+ /* (with the renderer's mem: lines) HOS_MEM_MAP=1: how much of the guest window is committed, and its resident part */
+ void hos_memory_map_log(void) {
+     static int on = -1;
+diff --git a/host/oot_barrier.c b/host/oot_barrier.c
+new file mode 100644
+index 00000000..06657509
+--- /dev/null
++++ b/host/oot_barrier.c
+@@ -0,0 +1,122 @@
++/* (longshot) OoT's job barriers wait for their masks instead of sleeping (host/oot_barrier.h has the protocol and why):
++   nx2/oot_patches.py patch_barrier_wait makes the lifted f_800998a0, f_800738e0 and f_8007e200 call hos_oot_barrier_wait in
++   place of the 20 us SleepThread of each of their five barrier loops, and hos_oot_barrier_wake right after each atomic OR
++   into a mask word those loops poll.
++
++   HOS_OOT_BARRIER_WAIT: unset or on, the waits (the default); off (0, false, off, no), the game's sleeps as before. Read
++   once, through hos_oot_barrier_on, the one place the hooks ask (HOS_AB may flip it there). */
++#include "hos.h"
++#ifndef LONGSHOT_ENV_H   /* (env_on: the switches' one rule) */
++#include "../gpu/vk/compat/longshot_env.h"
++#endif
++#include <stdlib.h>
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++/* (a wait's longest: the safety net, as the game's loop looks again after it. A wait ends at the OR that moves a word it
++   polls; only a word moved by code without the wake call waits this long. The game asked for 20 us, which Windows' timer
++   gave as ~0.5 ms; WaitOnAddress counts milliseconds) */
++#define OOT_BARRIER_TIMEOUT_NS 1000000
++
++#ifdef _WIN32
++/* (from kernelbase.dll, without linking Synchronization.lib, as gpu/vk/vk_replay.cpp's recorder waits) */
++typedef BOOL(WINAPI *BarrierWaitFn)(volatile VOID *, PVOID, SIZE_T, DWORD);
++typedef VOID(WINAPI *BarrierWakeFn)(PVOID);
++static BarrierWaitFn barrier_wait_fn;
++static BarrierWakeFn barrier_wake_fn;
++static int barrier_bind(void) {
++    const HMODULE k = GetModuleHandleA("kernelbase.dll");
++    if (!k) return 0;
++    barrier_wait_fn = (BarrierWaitFn)(void *)GetProcAddress(k, "WaitOnAddress");
++    barrier_wake_fn = (BarrierWakeFn)(void *)GetProcAddress(k, "WakeByAddressAll");
++    return barrier_wait_fn && barrier_wake_fn;
++}
++#define OOT_BARRIER_WAIT_ON(a, v, ms) \
++    do { uint32_t seen_ = (v); barrier_wait_fn((volatile VOID *)(a), &seen_, 4, (DWORD)(ms)); } while (0)
++#define OOT_BARRIER_WAKE_ALL(a) barrier_wake_fn((PVOID)(uintptr_t)(a))
++#else
++/* (host/posix's WaitOnAddress and WakeByAddressAll: a futex on the word) */
++static int barrier_bind(void) { return 1; }
++#define OOT_BARRIER_WAIT_ON(a, v, ms) \
++    do { uint32_t seen_ = (v); WaitOnAddress((volatile void *)(a), &seen_, 4, (DWORD)(ms)); } while (0)
++#define OOT_BARRIER_WAKE_ALL(a) WakeByAddressAll((void *)(uintptr_t)(a))
++#endif
++#define OOT_BARRIER_NOW_NS() hos_now_ns()
++#include "oot_barrier.h"
++
++static OotBarrier barrier;
++static int barrier_mode = -1;   /* (-1 not read yet, 0 off, 1 on) */
++static int barrier_bound;       /* (WaitOnAddress found: set before barrier_mode, read after it) */
++static volatile long long barrier_how[3], barrier_waited_ns, barrier_wakes;
++
++/* whether the hooks wait (1) or the game sleeps as before (0): HOS_OOT_BARRIER_WAIT, read once, and HOS_AB may flip it.
++   The one function the lifted code asks. WaitOnAddress is looked up whatever the switch says, so a flip to on mid-run has
++   it; a flip to off leaves a waiter to its timeout (no wake comes while off), at most 1 ms.
++   (longshot) On by default (18 Nov): in-run A/Bs standing in Castle Town's market, 4 cores: frame time -3.2 % in both runs
++   (frames of 16.7 ms or more 30 -> 19 % and 26 -> 16 %); 16 cores: no difference either way (+0.04 and +0.01 ms, both
++   intervals around 0). HOS_OOT_BARRIER_WAIT=0: the game's sleeps, as before. */
++int hos_oot_barrier_on(void) {
++    int m = __atomic_load_n(&barrier_mode, __ATOMIC_ACQUIRE);
++    if (__builtin_expect(m < 0, 0)) {
++        const char *e = getenv("HOS_OOT_BARRIER_WAIT");
++        m = !(e && env_value_off(e));
++        barrier_bound = barrier_bind();
++        if (m && !barrier_bound) {
++            hos_log("barrier: no WaitOnAddress on this system: the game's job barriers sleep as before");
++            m = 0;
++        }
++        int unset = -1;
++        if (__atomic_compare_exchange_n(&barrier_mode, &unset, m, 0, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE) && m)
++            hos_log("barrier: the game's job barriers (f_800998a0, f_800738e0, f_8007e200) wait until their masks move "
++                    "instead of sleeping 20 us (HOS_OOT_BARRIER_WAIT)");
++        m = __atomic_load_n(&barrier_mode, __ATOMIC_ACQUIRE);
++    }
++    return barrier_bound ? hos_ab_value("HOS_OOT_BARRIER_WAIT", m) : 0;
++}
++
++static void barrier_count(int how, int64_t waited) {
++    __atomic_add_fetch(&barrier_how[how], 1, __ATOMIC_RELAXED);
++    if (waited) __atomic_add_fetch(&barrier_waited_ns, waited, __ATOMIC_RELAXED);
++    const long long n0 = barrier_how[0], n1 = barrier_how[1], n2 = barrier_how[2];
++    /* (every 16,384 waits that waited: the barrier sleeps came ~1,400 times a second standing in the market on 4 logical
++       processors, from the 17 Nov samples, so about every 12 s) */
++    if (how != OOT_BARRIER_AT_ONCE && !((n1 + n2) & 16383))
++        hos_log("barrier: %lld looks: %lld found the masks moved already, %lld waited until they moved, %lld for the whole "
++                "%d ms (a wait %.0f us on average); %lld wakes", n0 + n1 + n2, n0, n1, n2, OOT_BARRIER_TIMEOUT_NS / 1000000,
++                barrier_waited_ns / 1e3 / (double)(n1 + n2), barrier_wakes);
++}
++
++/* In place of the barrier's SleepThread. p: the job block; off1, off2: the offsets in it of the mask words the loop polls
++   (the same twice for one word); seen1, seen2: their values when the loop's pass looked; full: the value at which the loop
++   leaves. 1: the wait was done here (the loop then looks again, without the sleep); 0: the switch is off (the sleep runs) */
++int hos_oot_barrier_wait(uint64_t p, uint32_t off1, uint32_t seen1, uint32_t off2, uint32_t seen2, uint32_t full) {
++    if (!hos_oot_barrier_on()) return 0;
++    volatile uint32_t *const w[OOT_BARRIER_WORDS] = {(volatile uint32_t *)GP(p + off1), (volatile uint32_t *)GP(p + off2)};
++    const uint32_t seen[OOT_BARRIER_WORDS] = {seen1, seen2};
++    const int n = off1 == off2 ? 1 : 2;
++    if (oot_barrier_moved(w, seen, n, full)) {   /* (moved since the pass looked: back to the loop, the core kept) */
++        barrier_count(OOT_BARRIER_AT_ONCE, 0);
++        return 1;
++    }
++    extern volatile int hos_fps_timing;   /* (host/hos_thread.c: the FPS counter's Breakdown counts the guest's sleeps) */
++    extern _Thread_local int64_t hos_slept_ns[2];
++    const int64_t t0 = hos_now_ns();
++    HOS_CHAIN(HOS_CHAIN_WAIT, p);
++    const int away = hos_vcore_away();   /* (the core given up, as a sleep does) */
++    const int how = oot_barrier_wait(&barrier, p, w, seen, n, full, OOT_BARRIER_TIMEOUT_NS);
++    if (away) hos_vcore_back();
++    HOS_CHAIN(HOS_CHAIN_WOKE, p);
++    const int64_t waited = hos_now_ns() - t0;
++    if (hos_fps_timing) hos_slept_ns[1] += waited;
++    barrier_count(how, waited > 0 ? waited : 1);
++    return 1;
++}
++
++/* Right after an atomic OR into a polled mask word of job block p */
++void hos_oot_barrier_wake(uint64_t p) {
++    if (!hos_oot_barrier_on()) return;
++    if (oot_barrier_wake(&barrier, p)) {
++        HOS_CHAIN(HOS_CHAIN_SIGNAL, p);
++        __atomic_add_fetch(&barrier_wakes, 1, __ATOMIC_RELAXED);
++    }
++}
+diff --git a/host/oot_barrier.h b/host/oot_barrier.h
+new file mode 100644
+index 00000000..1875edd1
+--- /dev/null
++++ b/host/oot_barrier.h
+@@ -0,0 +1,105 @@
++/* (longshot) OoT's job barriers: a wait that ends when the work it waits for is done, in place of the game's 20 us sleep
++   (HOS_OOT_BARRIER_WAIT; host/oot_barrier.c is the glue, nx2/oot_patches.py patch_barrier_wait puts in the calls).
++
++   Three of the game's parallel-for jobs (f_800998a0, f_800738e0, f_8007e200) run on several threads at once over one job
++   block P: each pass over the job's items takes an item and marks its progress with an atomic OR into a bitmask in P, and a
++   thread with nothing left to take sleeps 20 us (nn::os::SleepThread) and looks again, until the masks it polls are full.
++   On Windows with few logical processors a sleep under a millisecond waits on the timer and wakes ~0.5 ms late
++   (host/hos_thread.c sleep_ns), so each look came late: on 4 logical processors, standing in Castle Town's market, the
++   main thread was asleep at those sleeps in 11.4 % of its samples (~2 ms a frame). Making the main thread's short sleeps
++   yield instead raised its CPU from 22-29 % to 33-37 % of a core and did not shorten the frame (18 Nov, the same scene,
++   two rounds an arm): what is wanted is a wake at the moment the work is done, with no CPU spent until then.
++
++   Here a thread with nothing left waits on a word of the host's, a slot of a small table keyed by P, until a mask word
++   it polls differs from what its pass saw, or every one is full, or a timeout; a thread that ORs into a polled word wakes
++   the slot's waiters right after the OR. The game's own loop is kept: after the wait it looks at the masks again and
++   takes what there is, as after its sleep, so a wait that ends early (a wake for another job in the same slot, a timeout)
++   costs a look and nothing else.
++
++   No lost wake-up (every load and read-modify-write here sequentially consistent, and the waker fenced after its OR):
++     waiter: waiters += 1 (armed); then, in a loop: g = gen; look at the words (they moved: done); wait while gen == g
++     waker:  OR into the word (the lifted code); fence; if waiters: gen += 1, wake every waiter on gen
++   If the waker reads waiters == 0, its OR comes before the arming in the one order of these operations, so the waiter's
++   first look after arming sees it. Otherwise it moves gen and wakes: a waiter whose g was read after the move sees the
++   OR in the look that follows it; one whose g was read before finds gen != g when the wait compares (and returns at
++   once) or is asleep on gen and is woken. A wake on gen with no move of a polled word (another job of the slot, a
++   spurious wake of the OS) is looked at and waited again inside the wait, without going back to the game.
++
++   The includer gives the platform's wait and wake (OOT_BARRIER_WAIT_ON(address of a uint32_t, the value it must still
++   hold, ms), which returns at once when the word differs, and OOT_BARRIER_WAKE_ALL(address)) and the clock
++   (OOT_BARRIER_NOW_NS()). OOT_BARRIER_ARMING() runs just before the arming and OOT_BARRIER_LOOKED() between a look and
++   the wait after it: nothing in the game, a test pauses there to put a wake in each window. */
++#ifndef OOT_BARRIER_H
++#define OOT_BARRIER_H
++#include <stdint.h>
++
++#ifndef OOT_BARRIER_ARMING
++#define OOT_BARRIER_ARMING() ((void)0)
++#endif
++#ifndef OOT_BARRIER_LOOKED
++#define OOT_BARRIER_LOOKED() ((void)0)
++#endif
++
++enum { OOT_BARRIER_SLOTS = 64, OOT_BARRIER_WORDS = 2 };
++/* how a wait ended: the words had moved before it began (no wait), they moved while it waited, or its time ran out */
++enum { OOT_BARRIER_AT_ONCE, OOT_BARRIER_MOVED, OOT_BARRIER_TIMED_OUT };
++
++typedef struct OotBarrierSlot {
++    _Alignas(64) volatile uint32_t gen;   /* (its own cache line: the jobs' threads move it at their ORs) */
++} OotBarrierSlot;
++typedef struct OotBarrier {
++    OotBarrierSlot slot[OOT_BARRIER_SLOTS];
++    _Alignas(64) volatile int32_t waiters;   /* (threads armed in a wait, every slot: the wakers' one load when none waits) */
++} OotBarrier;
++
++/* the slot of a job block (P, a guest address: blocks are at least 64 bytes apart) */
++static inline OotBarrierSlot *oot_barrier_slot(OotBarrier *b, uint64_t key) {
++    return &b->slot[(uint32_t)(key >> 6 ^ key >> 12 ^ key >> 18) % OOT_BARRIER_SLOTS];
++}
++
++/* 1 when a polled word differs from what the pass saw (w[i] against seen[i]), or every one is full: the game's loop then
++   has something to look at */
++static inline int oot_barrier_moved(volatile uint32_t *const *w, const uint32_t *seen, int n, uint32_t full) {
++    int all_full = 1;
++    for (int i = 0; i < n; i++) {
++        const uint32_t v = __atomic_load_n(w[i], __ATOMIC_SEQ_CST);
++        if (v != seen[i]) return 1;
++        all_full &= v == full;
++    }
++    return all_full;
++}
++
++/* Waits until a polled word moves (oot_barrier_moved) or timeout_ns passes; the caller has looked at the words already and
++   given its virtual core up. OOT_BARRIER_MOVED or OOT_BARRIER_TIMED_OUT */
++static inline int oot_barrier_wait(OotBarrier *b, uint64_t key, volatile uint32_t *const *w, const uint32_t *seen, int n,
++                                   uint32_t full, int64_t timeout_ns) {
++    OotBarrierSlot *s = oot_barrier_slot(b, key);
++    const int64_t end = OOT_BARRIER_NOW_NS() + timeout_ns;
++    int how = OOT_BARRIER_TIMED_OUT;
++    OOT_BARRIER_ARMING();
++    __atomic_add_fetch(&b->waiters, 1, __ATOMIC_SEQ_CST);
++    for (;;) {
++        const uint32_t g = __atomic_load_n(&s->gen, __ATOMIC_SEQ_CST);
++        if (oot_barrier_moved(w, seen, n, full)) {   /* (the look after arming: a change before it is never missed) */
++            how = OOT_BARRIER_MOVED;
++            break;
++        }
++        const int64_t left = end - OOT_BARRIER_NOW_NS();
++        if (left <= 0) break;
++        OOT_BARRIER_LOOKED();
++        OOT_BARRIER_WAIT_ON(&s->gen, g, (uint32_t)((left + 999999) / 1000000));
++    }
++    __atomic_sub_fetch(&b->waiters, 1, __ATOMIC_SEQ_CST);
++    return how;
++}
++
++/* After an OR into a polled word of job block key: wakes the slot's waiters (1), or nothing when no thread waits (0) */
++static inline int oot_barrier_wake(OotBarrier *b, uint64_t key) {
++    __atomic_thread_fence(__ATOMIC_SEQ_CST);   /* (the OR before it, whatever order the lift gave it) */
++    if (!__atomic_load_n(&b->waiters, __ATOMIC_SEQ_CST)) return 0;
++    OotBarrierSlot *s = oot_barrier_slot(b, key);
++    __atomic_add_fetch(&s->gen, 1, __ATOMIC_SEQ_CST);
++    OOT_BARRIER_WAKE_ALL(&s->gen);
++    return 1;
++}
++#endif
+diff --git a/host/oot_high_fps.c b/host/oot_high_fps.c
+index c5b9f4d2..2d73a918 100644
+--- a/host/oot_high_fps.c
++++ b/host/oot_high_fps.c
+@@ -82,8 +82,24 @@ uint64_t hos_oot_bgm_flags(uint64_t at, uint64_t flags) {
+ 
+ /* The solver steps of f_838ceb80 / f_838cfc10: game, the game's count; scaled_bits, the float it cut; per_frame_bits, the steps
+    of a 60 fps frame (a float) */
++/* (Deckport) HOS_OOT_SOLVER_MAX=<n>: at most n solver steps a frame; 0 (the default) keeps the game's count. The game's count
++   grows with the frame's time (8 steps a 60 fps frame, so 24 at 20 fps): a frame the CPU made slow gets more physics to do,
++   and is slower again. HOS_AB may flip it between two frames (nothing is kept between calls). */
++static int solver_max(void) {
++    static int v = -1;   /* (read by the game's threads) */
++    int m = __atomic_load_n(&v, __ATOMIC_RELAXED);
++    if (m < 0) {
++        const char *e = getenv("HOS_OOT_SOLVER_MAX");
++        m = e ? atoi(e) : 0;
++        if (m < 0) m = 0;
++        __atomic_store_n(&v, m, __ATOMIC_RELAXED);
++    }
++    return hos_ab_value("HOS_OOT_SOLVER_MAX", m);
++}
+ uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_frame_bits) {
+-    const int32_t steps = oot_solver_steps((int32_t)game, scaled_bits, per_frame_bits, timed());
++    int32_t steps = oot_solver_steps((int32_t)game, scaled_bits, per_frame_bits, timed());
++    const int32_t cap = solver_max();
++    if (cap > 0 && steps > cap) steps = cap;
+     if (fps_log()) {
+         static volatile LONG64 calls;
+         const LONG64 n = InterlockedIncrement64(&calls);
+diff --git a/host/rx_backend.c b/host/rx_backend.c
+index 28408ea9..e5b19fba 100644
+--- a/host/rx_backend.c
++++ b/host/rx_backend.c
+@@ -86,12 +86,14 @@ static inline int marks_clear_256(const uint8_t *m) {
+     return !any;
+ }
+ static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **pages) {
+-    /* (HOS_COLLECT_WIDE=0: 32 marks a step at most, as before; the pages found are the same either way) */
+-    static int wide = -1;
+-    if (wide < 0) {
++    /* (HOS_COLLECT_WIDE=0: 32 marks a step at most, as before; the pages found are the same either way, so HOS_AB may flip it
++       between two walks: host/hos_ab.c) */
++    static int wide_set = -1;
++    if (wide_set < 0) {
+         const char *e = getenv("HOS_COLLECT_WIDE");
+-        wide = !(e && e[0] == '0');
++        wide_set = !(e && e[0] == '0');
+     }
++    const int wide = hos_ab_value("HOS_COLLECT_WIDE", wide_set);
+     size_t n = 0, cap = 4096;
+     uint32_t *out = malloc(cap * sizeof *out);
+     for (int r = 0; r < nranges; r++) {
+@@ -286,6 +288,7 @@ static const MkwVkHost vk_host = {
+     hos_audio_output_count, hos_audio_output_info, hos_audio_output_select, hos_audio_output_state,
+     hos_mic_test, hos_perf_info, host_main_thread_times, host_out_of_memory,
+     hos_monitor_count, hos_monitor_info, hos_monitor_select,
++    hos_ab_frame,   /* (version 30, Deckport: Longshot #1661, the frame trace's ab_side) */
+ };
+ 
+ static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
+@@ -451,6 +454,7 @@ static volatile LONG presents;   /* (the frames shown, for the camera jitter bel
+ void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
+     InterlockedIncrement(&presents);
+     hos_slow_frame_present();   /* (HOS_SLOW_FRAMES: a late frame's samples written out, host/slow_frames.c) */
++    hos_ab_present();   /* (longshot) HOS_AB: the frame counted for its side (host/hos_ab.c) */
+     vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
+ }
+ /* (longshot, nx2/oot_jitter.py) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip
+diff --git a/nx2/build.py b/nx2/build.py
+index 927b38f7..36b92703 100644
+--- a/nx2/build.py
++++ b/nx2/build.py
+@@ -1685,7 +1685,7 @@ def main():
+             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
+             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
+             "-include", "string", "-include", "vector",
+-            "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
++            "-std=c++20", "-" + os.environ.get("RX_VK_OPT", "O2"), *os.environ.get("RX_VK_CXX_EXTRA", "").split(), "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
+             *(["-DLONGSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
+             # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
+             # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
+@@ -1991,7 +1991,7 @@ def main():
+         open(vrsp, "w", encoding="utf-8").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in vk_jobs))
+         t = time.time()
+         if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
+-            link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-fuse-ld=lld", "-shared", "-o", vdll] + \
++            link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-fuse-ld=lld", "-shared", *os.environ.get("RX_VK_LD_EXTRA", "").split(), "-o", vdll] + \
+                 linker("-Map=" + vdll + ".map") + ["-Wl,-Bsymbolic", "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
+                 ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
+         else:   # (RX_VK_PGO=gen: no profile library, as in the game's link; host/pgo_rt.c writes the counters)
+diff --git a/nx2/oot_patches.py b/nx2/oot_patches.py
+index 43521a11..eda97386 100644
+--- a/nx2/oot_patches.py
++++ b/nx2/oot_patches.py
+@@ -27,6 +27,10 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
+   option without a write, so a saved choice was never applied (issue 430). The call goes through hos_oot_voice_option,
+   which also says yes when the option's value is not the one of the update before. The supported build only.
+ - Ocarina note controls: the note-wait action's start (f_828a9190) and tick (f_828a9280) report the wait to the host (hos_oc_wait, hos_oc_beat), which swaps the five notes for its own controls (host/nn_hid.c); a tick whose gates refuse reports no wait, so a dialogue keeps its buttons.
++- The game's job barriers waiting for their work (host/oot_barrier.h): three parallel-for jobs (f_800998a0, f_800738e0,
++  f_8007e200) sleep 20 us and look again while the masks they poll are not full; the sleep is hos_oot_barrier_wait, which
++  ends when a polled word moves, and each OR into such a word wakes the waiters (hos_oot_barrier_wake). On by default;
++  HOS_OOT_BARRIER_WAIT=0, the sleeps as lifted.
+ """
+ import collections
+ import glob
+@@ -675,6 +679,172 @@ def patch_bgm_flags(s):
+     return s, 1
+ 
+ 
++# The game's job barriers waiting for their masks instead of sleeping 20 us (host/oot_barrier.h has the protocol and why;
++# HOS_OOT_BARRIER_WAIT, on by default). Three parallel-for jobs are run by several threads over one job block P: every pass
++# over the job's items takes an item by an atomic OR into a claim mask in P and, the item done, ORs it into a done mask; a
++# thread with nothing to take sleeps (SleepThread of the tick frequency / 50000: 20 us) and goes back to its loop, until the
++# masks it polls are full. With the switch on the sleep is hos_oot_barrier_wait(P, the polled words' offsets, the values
++# the loop's pass saw, the full mask), and each OR into a polled word is followed by hos_oot_barrier_wake(P) (P: the OR's
++# own address less the word's offset); off (=0), the sleep runs as lifted and the wakes do nothing. What was matched, read
++# from the lift of the supported build with every path followed back from each sleep:
++#   f_800998a0 (P in x24 at each sleep, reloaded from its frame slot x29-96 only; the full mask stored at x29-100 once):
++#     - sleep LR 0x8009a478, back to the outer loop's head 0x80099a00: polls the claim masks P+0x1f4 (after the yield at
++#       0x8009a420) and P+0x1fc (at 0x8009a6f0) against x22, both read after the passes: the hook reads them at the call;
++#     - sleep LR 0x8009b234, back to 0x8009a768: polls P+0x200 through its value at that loop's head (x25, or its copy at
++#       sp+104 put back after the pass), against x22;
++#     - sleep LR 0x8009aff0, back to 0x8009aa1c: polls P+0x208 through its value at that loop's head (x19, or its copy at
++#       sp+72), against the full mask read again from x29-100;
++#     - the ORs into P+0x1f4, P+0x1fc, P+0x200 (the pass that ends at the yield at 0x8009a420) and P+0x208 (the pass that
++#       ends at 0x8009aa00): the only writes of those words in the function.
++#   f_800738e0 (P in x19, the entry's x0: no other write of x19 reaches the sleep): sleep LR 0x800747ac, back to
++#     0x80073e38, polls P+0x210 and P+0x218 through their values at that loop's head (x25, x28) against the full mask at
++#     sp+16 (stored once); the ORs into them are in the two passes before the loop.
++#   f_8007e200 (P in x26, put back from x23 after each item): sleep LR 0x8007e90c, back to 0x8007e6c0, polls P+0x220
++#     through its value at that loop's head (x21) against ~x28 (x28: the inverted full mask, stored at sp+68 at entry); the
++#     OR into it is in the pass before the loop, which can reach the sleep without a yield: so the wakes are at the ORs.
++# A function is hooked only where every one of its places and marks is there once (another game version: left as it is,
++# and the report warns), and then at all its places: a sleep never waits for a wake that is not there. The three keep their
++# registers in the context (their addresses are named here: mentioned_addresses), so the text met is the lift's own.
++def _barrier_or(base, off, addr, value, between=""):
++    """(the lifted OR into P+off, its address made from register base into register addr; the same with the wake after it)"""
++    head = "    { uint64_t _a=c->x[%d], _b=%dULL; uint64_t _r=_a+_b; c->x[%d]=_r; }\n%s" % (base, off, addr, between)
++    rmw = ("{ uint64_t _a = c->x[%d]; uint32_t *_p = (uint32_t *)A64_PTR(_a); uint32_t _o = __atomic_fetch_or(_p, (uint32_t)c->x[%d], "
++           "__ATOMIC_SEQ_CST); A64_MARK(_a, 4); c->x[8] = (uint64_t)_o;" % (addr, value))
++    return (head + rmw + " }\n",
++            head + rmw + " if (hos_oot_barrier_on()) hos_oot_barrier_wake(_a - %dULL); }   /* (nx2/oot_patches.py: "
++                         "HOS_OOT_BARRIER_WAIT) */\n" % off)
++
++
++def _barrier_sleep(lr, then, wait):
++    """(the sleep at its return address and the lines after it; the same with the wait in front of it)"""
++    return ("c->x[30] = 0x%xULL; f_85106220(c);\n%s" % (lr, then),
++            "c->x[30] = 0x%xULL; if (!hos_oot_barrier_on() || !hos_oot_barrier_wait(%s)) f_85106220(c);"
++            "   /* (nx2/oot_patches.py: HOS_OOT_BARRIER_WAIT) */\n%s" % (lr, wait, then))
++
++
++BARRIER_SITES = (   # (the function's head, the marks its code must have, its places: (lifted text, the text in its place))
++    ("void f_800998a0(Ctx *__restrict A64_NOESC c) {\n",
++     ("    c->x[8]=recomp_load32(c,c->x[24] + 500);\n    recomp_barrier();\n"
++      "    { uint64_t _b=c->x[29]; int64_t _o=-100; c->x[22]=recomp_load32(c,(_b+_o)); }\n",
++      "L_8009a6f0:;\n    c->x[8]=recomp_load32(c,c->x[24] + 508);\n",
++      "L_8009a768:;\n    c->x[25]=recomp_load32(c,c->x[24] + 512);\n", "recomp_store32_sp(c,c->x[31] + 104,c->x[25]);",
++      "c->x[25]=recomp_load32(c,c->x[31] + 104);",
++      "L_8009aa1c:;\n    c->x[19]=recomp_load32(c,c->x[24] + 520);\n", "recomp_store32_sp(c,c->x[31] + 72,c->x[19]);",
++      "c->x[19]=recomp_load32(c,c->x[31] + 72);",
++      "c->x[30] = 0x8009afa4ULL; f_85106210(c);\n    { uint64_t _b=c->x[29]; int64_t _o=-100; c->x[8]=recomp_load32(c,(_b+_o)); }\n"),
++     (_barrier_sleep(0x8009a478, "{ A64_POLL(c); goto L_80099a00; }\n",
++                     "c->x[24], 500, (uint32_t)recomp_load32(c,c->x[24] + 500), 508, (uint32_t)recomp_load32(c,c->x[24] + 508), "
++                     "(uint32_t)c->x[22]"),
++      _barrier_sleep(0x8009b234, "    c->x[11] = 0x1ULL;\n    c->x[11] &= 0xFFFFFFFFULL;\n{ A64_POLL(c); goto L_8009a768; }\n",
++                     "c->x[24], 512, (uint32_t)c->x[25], 512, (uint32_t)c->x[25], (uint32_t)c->x[22]"),
++      _barrier_sleep(0x8009aff0, "{ A64_POLL(c); goto L_8009aa1c; }\n",
++                     "c->x[24], 520, (uint32_t)c->x[19], 520, (uint32_t)c->x[19], (uint32_t)recomp_load32(c,c->x[29] - 100)"),
++      _barrier_or(24, 500, 8, 23), _barrier_or(24, 508, 8, 23), _barrier_or(24, 512, 8, 23),
++      _barrier_or(24, 520, 8, 9, "    c->x[11] = 0x1ULL;\n    c->x[11] &= 0xFFFFFFFFULL;\n    c->x[9]=recomp_load32(c,c->x[31] + 112);\n"))),
++    ("void f_800738e0(Ctx *__restrict A64_NOESC c) {\n",
++     ("    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[19] = _r; }\n",
++      "L_80073e38:;\n    c->x[25]=recomp_load32(c,c->x[19] + 528);\n    recomp_barrier();\n    c->x[28]=recomp_load32(c,c->x[19] + 536);\n",
++      "recomp_store32_sp(c,c->x[31] + 16,c->x[8]);", "c->x[9]=recomp_load32(c,c->x[31] + 16);"),
++     (_barrier_sleep(0x800747ac, "{ A64_POLL(c); goto L_80073e38; }\n",
++                     "c->x[19], 528, (uint32_t)c->x[25], 536, (uint32_t)c->x[28], (uint32_t)recomp_load32(c,c->x[31] + 16)"),
++      _barrier_or(19, 528, 27, 26, "c->x[30] = 0x80073958ULL; f_80279140(c);\n    recomp_barrier();\n"),
++      _barrier_or(19, 536, 8, 9, "    { c->x[9]=(uint64_t)(uint32_t)((uint32_t)c->x[3]<<(c->x[21]&31)); }\n    recomp_barrier();\n"))),
++    ("void f_8007e200(Ctx *__restrict A64_NOESC c) {\n",
++     ("recomp_store32_sp(c,c->x[31] + 68,c->x[9]);",
++      "L_8007e6c0:;\n    c->x[21]=recomp_load32(c,c->x[26] + 544);\n",
++      "    c->x[28]=recomp_load32(c,c->x[31] + 68);\n",
++      "{ uint64_t _r = (c->x[21] ^ ((uint64_t)(uint32_t)(((uint32_t)(c->x[28])) << 0))); _r &= 0xFFFFFFFFULL; c->x[8] = _r; }"),
++     (_barrier_sleep(0x8007e90c, "{ A64_POLL(c); goto L_8007e6c0; }\n",
++                     "c->x[26], 544, (uint32_t)c->x[21], 544, (uint32_t)c->x[21], ~(uint32_t)c->x[28]"),
++      _barrier_or(26, 544, 8, 9, "    { c->x[9]=(uint64_t)(uint32_t)((uint32_t)c->x[23]<<(c->x[21]&31)); }\n    recomp_barrier();\n"))),
++)
++BARRIER_DECL = ("extern int hos_oot_barrier_on(void);\n"
++                "extern int hos_oot_barrier_wait(uint64_t p, uint32_t off1, uint32_t seen1, uint32_t off2, uint32_t seen2, "
++                "uint32_t full);\n"
++                "extern void hos_oot_barrier_wake(uint64_t p);\n")
++# (the texts above are the lift's own, as the patches meet them: before a64_lift.mark_groups, the lift's last step, and with
++# the loops' polls in. Two other forms of a text are let through, each kept as it was found:
++#   - a group's shared page mark (a64_lift.MG_MARK) on a line of its own after any line end inside it. mark_groups puts one
++#     before a line that ends a run of stores, as the atomic OR, a call or recomp_barrier() do, so a run of the patches by
++#     hand over a finished lift (python -I nx2/oot_patches.py) can find one there;
++#   - a loop's back-edge `goto L_x;` without its `{ A64_POLL(c); ... }`: nx2/poll.py adds the polls around the function's
++#     emit, after nx2/guest_locals.py has asked touches() about its text)
++_BARRIER_MARKS = r"((?:    A64_MARK\(\(c->x\[\d+\] \+ \(uint64_t\)\(int64_t\)\(-?\d+\)\), \d+\);\n)*)"
++_BARRIER_POLLED = re.compile(r"\{ A64_POLL\(c\); (goto L_[0-9a-f]{8};) \}")
++
++
++class _BarrierText:
++    """A text of BARRIER_SITES as a pattern: its fixed pieces with a slot between two of them after each line end inside it
++    (group marks) and at each polled back-edge (the goto with or without its poll)"""
++
++    def __init__(self, text):
++        self.pieces, self.slots = [""], []
++        parts = _BARRIER_POLLED.split(text)   # (each polled goto at an odd index)
++        for k, part in enumerate(parts):
++            if k % 2:
++                goto = re.escape(part)
++                self.slots.append(r"(\{ A64_POLL\(c\); %s \}|%s)" % (goto, goto))
++                self.pieces.append("")
++                continue
++            lines = part.split("\n")
++            for i, line in enumerate(lines):
++                if i:
++                    self.pieces[-1] += "\n"
++                    if line or i < len(lines) - 1 or k < len(parts) - 1:   # (none after the text's own last line end)
++                        self.slots.append(_BARRIER_MARKS)
++                        self.pieces.append("")
++                self.pieces[-1] += line
++        self.re = re.compile("".join(re.escape(p) + s for p, s in zip(self.pieces, self.slots + [""])))
++
++    def count(self, body):
++        return sum(1 for _ in self.re.finditer(body))
++
++    def put(self, body, old):
++        """body with the first place old finds made this text, what old's slots found kept in this text's slots (body as it
++        is where old finds none, as str.replace)"""
++        m = old.re.search(body)
++        if m is None:
++            return body
++        return body[:m.start()] + "".join(p + f for p, f in zip(self.pieces, m.groups() + ("",))) + body[m.end():]
++
++
++def _barrier_forms():
++    forms = []
++    for head_text, marks, places in BARRIER_SITES:
++        made = [(_BarrierText(old), _BarrierText(new)) for old, new in places]
++        if any(old.slots != new.slots for old, new in made):   # (a place and its text in its place, slot for slot)
++            raise ValueError("oot_patches: a barrier place and its hooked text differ in their lines or loops")
++        forms.append((head_text, [_BarrierText(m) for m in marks], made))
++    return tuple(forms)
++
++
++BARRIER_FORMS = _barrier_forms()
++
++
++def patch_barrier_wait(s):
++    """The job barriers' sleeps and ORs through the host: (s, how many of BARRIER_SITES' functions are in s with all their
++    places hooked, made now or before). A function whose code differs (another game version) is left as it is"""
++    done = 0
++    for head_text, marks, places in BARRIER_FORMS:
++        at = _function(s, head_text)
++        if at is None:
++            continue
++        head, end = at
++        body = s[head:end]
++        if all(new.count(body) == 1 and not old.count(body) for old, new in places):
++            done += 1
++            continue
++        if not all(m.count(body) == 1 for m in marks) or not all(old.count(body) == 1 for old, _ in places):
++            continue
++        for old, new in places:
++            body = new.put(body, old)
++        s = s[:head] + body + s[end:]
++        done += 1
++    if done and BARRIER_DECL not in s:
++        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + BARRIER_DECL, 1)
++    return s, done
++
++
+ def patch_solver_steps(s):
+     """The solver step count's two places: (s, how many of them are in s with the hook, made now or before)"""
+     done = 0
+@@ -1120,6 +1290,11 @@ def patch_file(s, name, protect_hearts=False):
+     if flags != out:
+         lines.append("oot_patches: the music manager's change flags kept above 60 fps in " + name)
+     out = flags
++    barrier, found = patch_barrier_wait(out)
++    counts["job barrier waits"] += found
++    if barrier != out:
++        lines.append("oot_patches: the job barriers' sleeps and mask ORs through the host in " + name)
++    out = barrier
+     solver, found = patch_solver_steps(out)
+     counts["solver sites"] += found
+     if solver != out:
+@@ -1174,6 +1349,9 @@ def report(paths, counts, protect_hearts=False):
+         print("oot_patches: WARNING: the music manager's time was found %d times, not once" % total["music manager time"])
+     if total["music manager flags"] != 1:   # (without it, above 60 fps the battle music can play on after a fight)
+         print("oot_patches: WARNING: the music manager's change flags were found %d times, not once" % total["music manager flags"])
++    if total["job barrier waits"] != len(BARRIER_SITES):   # (without them the job barriers sleep 20 us there, as before)
++        print("oot_patches: WARNING: the job barriers were found in %d of %d functions"
++              % (total["job barrier waits"], len(BARRIER_SITES)))
+     if total["solver sites"] != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
+         print("oot_patches: WARNING: the solver step count was found at %d of %d places" % (total["solver sites"], len(SOLVER_HEADS)))
+     for what, n in done.items():
+diff --git a/nx2/prompt_assets.py b/nx2/prompt_assets.py
+index e1ab5c54..5905af76 100644
+--- a/nx2/prompt_assets.py
++++ b/nx2/prompt_assets.py
+@@ -306,11 +306,14 @@ PICTURE_BUTTONS = {"east": (869, 227, 31), "south": (800, 286, 31), "north": (80
+ # the labels' bars (BARS: the left ones' right edge, the right ones' left edge, kept from the game's) to the picture's parts
+ # (nx2/prompt_faces.py): each line's texture, bar (0 left, 1 right), row (its top; 6 pixels thick) and end: a Switch button (the
+ # part of the pad input bound to it: one line per pad input, chosen by the controls; a face button or the d-pad: a frame round the
+-# group, as the game's round its face buttons, the label's icon telling which) or a pad input (fixed: the sticks)
+-GUIDES = ("ControllerGuide_Pro_00", "ControllerGuide_Pro_01")
++# group, as the game's round its face buttons, the label's icon telling which) or a pad input (fixed: the sticks; "dpad": a frame
++# round the d-pad, its label's icon the whole d-pad). The page draws all five textures: _02 to _04 hold ZR, the d-pad, L and R,
++# which a face's own picture needs moved as much as the others (left as the game's, they pointed at the Pro Controller's parts)
++GUIDES = tuple(f"ControllerGuide_Pro_0{i}" for i in range(5))
+ GUIDE_SCALE, GUIDE_AT, BARS = 1.1136, (131.3, 462.6), (147, 1407)
+ GUIDE_LINES = [(0, 0, 333, "zl"), (1, 0, 561, "minus"), (0, 0, 667, "lstick"), (0, 1, 558, "plus"), (0, 1, 713, "a"),
+-               (0, 1, 1225, "rstick")]
++               (0, 1, 1225, "rstick"), (2, 1, 333, "zr"), (3, 0, 1016, "dpad"), (4, 0, 446, "l"), (4, 1, 446, "r")]
++GUIDE_DPAD = ("up", "left", "right", "down")
+ 
+ 
+ def bntx_textures(b):
+@@ -768,7 +771,11 @@ def guide_layers(game, face):
+         keep.append(k)
+     for tx, bar, row, end in GUIDE_LINES:   # (the lines that stay first: those that move keep off them)
+         if end not in SW and face != "switch":
+-            keep[tx] = ImageChops.lighter(keep[tx], guide_line(size, bar, row, where, end, keep[tx]))
++            if end == "dpad":
++                if all(p in where for p in GUIDE_DPAD):
++                    keep[tx] = ImageChops.lighter(keep[tx], guide_frame(size, bar, row, where, GUIDE_DPAD, keep[tx]))
++            elif end in where:
++                keep[tx] = ImageChops.lighter(keep[tx], guide_line(size, bar, row, where, end, keep[tx]))
+     moving = {}
+     for tx, bar, row, end in GUIDE_LINES:
+         if end not in SW:
+diff --git a/scripts/ab_summary.py b/scripts/ab_summary.py
+new file mode 100644
+index 00000000..89d44264
+--- /dev/null
++++ b/scripts/ab_summary.py
+@@ -0,0 +1,190 @@
++"""(longshot) An A/B within one run (HOS_AB, host/hos_ab.c) read from the frame trace: each side's frame times.
++
++    python -I scripts/ab_summary.py <frames.csv>... [--boot 2000] [--seed 1] [--json]
++
++<frames.csv> is the frame trace of a run with HOS_AB and RX_VK_FRAME_TRACE=1 set: logs/longshot_frames.csv in the game folder
++(frames.csv in the profile folder with HOS_PROFILE=1). Its ab_side column gives each frame's side: -1 outside the A/B (none set,
++the warm-up), 0 the switch's normal value, 1 the A/B's value, 2 or 3 those sides' frames in a transition (a flip inside the
++frame, or less than 0.3 s before its end). Frames outside the A/B and in transitions are left out.
++
++A period is a run of frames of one side. The last one is left out when the run cut it short (under 80 % of the median period's
++time), and then one more when needed so that the periods kept start and end on the same side (an odd count): the two sides'
++periods are then centred on the same time, and a frame time that drifts steadily over the run (a scene warming up, memory
++growing) moves both sides' means alike.
++
++For each side: frames, mean, median and 99th percentile frame time, the share of frames of 16.7 ms or more, and fps (1000 / the
++mean). Then side 1 less side 0, with a 95 % interval for the mean's difference from a block bootstrap over periods (frames within
++a period are alike, so a period is resampled whole; each side's periods resampled apart). Each file alone, then all of them
++together when there are several (their periods pooled). --json prints the numbers as JSON instead.
++"""
++import argparse
++import csv
++import json
++import random
++import statistics
++import sys
++
++SLOW_MS = 16.7
++STEADY = (0, 1)       # (ab_side: a side's steady frames)
++TRANSITION = (2, 3)   # (ab_side: a side's frames in a transition, side + 2)
++NAMES = {0: "0 normal", 1: "1 A/B"}
++
++
++def read_frames(path):
++    """[(ms, ab_side)] of the trace, in order; a line cut short (the run ended while writing it) left out"""
++    out = []
++    with open(path, newline="", encoding="utf-8", errors="replace") as f:
++        rows = csv.DictReader(f)
++        if not rows.fieldnames or "ab_side" not in rows.fieldnames or "ms" not in rows.fieldnames:
++            raise SystemExit("%s: no ms and ab_side columns: not a frame trace of a build with HOS_AB (host/hos_ab.c)" % path)
++        for r in rows:
++            try:
++                out.append((float(r["ms"]), int(r["ab_side"])))
++            except (TypeError, ValueError):
++                continue
++    return out
++
++
++def periods_of(frames):
++    """The A/B's periods in order: {side, ms: [the steady frames' times], total: every frame's time, transitions}"""
++    periods, last = [], None
++    for ms, v in frames:
++        if v not in STEADY and v not in TRANSITION:   # (outside the A/B: its warm-up)
++            last = None
++            continue
++        side = v & 1
++        # (a new period: the side changed, or a transition after steady frames, as after a stall that took a whole period)
++        if last is None or side != last or (v in TRANSITION and periods[-1]["ms"]):
++            periods.append({"side": side, "ms": [], "total": 0.0, "transitions": 0})
++        p = periods[-1]
++        p["total"] += ms
++        if v in TRANSITION:
++            p["transitions"] += 1
++        else:
++            p["ms"].append(ms)
++        last = side
++    return [p for p in periods if p["ms"]]
++
++
++def trim(periods):
++    """The periods kept: the last left out when cut short, then one more when needed for the same side at both ends"""
++    dropped = 0
++    if len(periods) > 2:
++        median = statistics.median(p["total"] for p in periods[:-1])
++        if periods[-1]["total"] < 0.8 * median:
++            periods, dropped = periods[:-1], 1
++    if len(periods) > 1 and periods[0]["side"] != periods[-1]["side"]:
++        periods, dropped = periods[:-1], dropped + 1
++    return periods, dropped
++
++
++def percentile(sorted_ms, q):
++    """The q-th percentile (0-100), interpolated between ranks"""
++    if not sorted_ms:
++        return 0.0
++    at = (len(sorted_ms) - 1) * q / 100.0
++    lo = int(at)
++    hi = min(lo + 1, len(sorted_ms) - 1)
++    return sorted_ms[lo] + (sorted_ms[hi] - sorted_ms[lo]) * (at - lo)
++
++
++def side_stats(periods, side):
++    ms = sorted(m for p in periods if p["side"] == side for m in p["ms"])
++    if not ms:
++        return {"periods": 0, "frames": 0}
++    mean = sum(ms) / len(ms)
++    return {"periods": sum(1 for p in periods if p["side"] == side), "frames": len(ms), "mean_ms": mean,
++            "median_ms": percentile(ms, 50), "p99_ms": percentile(ms, 99),
++            "slow_share": sum(1 for m in ms if m >= SLOW_MS) / len(ms), "fps": 1000.0 / mean}
++
++
++def bootstrap(periods, boot, seed):
++    """The 2.5th and 97.5th percentiles of side 1's mean less side 0's, each side's periods resampled whole; None with fewer
++    than 2 periods a side"""
++    by = {s: [(sum(p["ms"]), len(p["ms"])) for p in periods if p["side"] == s] for s in STEADY}
++    if len(by[0]) < 2 or len(by[1]) < 2 or boot < 1:
++        return None
++    rnd = random.Random(seed)
++    diffs = []
++    for _ in range(boot):
++        means = []
++        for s in STEADY:
++            pick = [rnd.choice(by[s]) for _ in by[s]]
++            means.append(sum(t for t, _ in pick) / sum(n for _, n in pick))
++        diffs.append(means[1] - means[0])
++    diffs.sort()
++    return percentile(diffs, 2.5), percentile(diffs, 97.5)
++
++
++def summary(name, periods, dropped, left_out, boot, seed):
++    s0, s1 = side_stats(periods, 0), side_stats(periods, 1)
++    out = {"name": name, "periods": len(periods), "periods_left_out": dropped, "transition_frames": left_out[0],
++           "outside_frames": left_out[1], "sides": {"0": s0, "1": s1}}
++    if s0["frames"] and s1["frames"]:
++        d = s1["mean_ms"] - s0["mean_ms"]
++        out["diff"] = {"mean_ms": d, "mean_pct": 100 * d / s0["mean_ms"], "fps_pct": 100 * (s1["fps"] / s0["fps"] - 1),
++                       "median_ms": s1["median_ms"] - s0["median_ms"], "p99_ms": s1["p99_ms"] - s0["p99_ms"],
++                       "slow_share": s1["slow_share"] - s0["slow_share"]}
++        ci = bootstrap(periods, boot, seed)
++        if ci:
++            out["diff"]["ci_ms"] = list(ci)
++            out["diff"]["ci_pct"] = [100 * c / s0["mean_ms"] for c in ci]
++    return out
++
++
++def show(r):
++    print("%s: %d periods (%d of side 0, %d of side 1); left out: %d period(s) at the end, %d transition frames, %d frames "
++          "outside the A/B" % (r["name"], r["periods"], r["sides"]["0"]["periods"], r["sides"]["1"]["periods"],
++                               r["periods_left_out"], r["transition_frames"], r["outside_frames"]))
++    print("  %-9s %7s %8s %8s %8s %9s %7s" % ("side", "frames", "mean ms", "median", "p99", ">=16.7ms", "fps"))
++    for s in ("0", "1"):
++        st = r["sides"][s]
++        if not st["frames"]:
++            print("  %-9s %7d  (no frames)" % (NAMES[int(s)], 0))
++            continue
++        print("  %-9s %7d %8.3f %8.3f %8.3f %8.1f%% %7.1f" % (NAMES[int(s)], st["frames"], st["mean_ms"], st["median_ms"],
++                                                           st["p99_ms"], 100 * st["slow_share"], st["fps"]))
++    d = r.get("diff")
++    if not d:
++        print("  no difference: a side has no frames")
++        return
++    line = "  side 1 - side 0: mean %+.3f ms (%+.2f %%, fps %+.2f %%), median %+.3f ms, p99 %+.3f ms, >=16.7 ms %+.1f points" % (
++        d["mean_ms"], d["mean_pct"], d["fps_pct"], d["median_ms"], d["p99_ms"], 100 * d["slow_share"])
++    print(line)
++    if "ci_ms" not in d:
++        print("  95 %% interval: too few periods (2 a side at least)")
++        return
++    lo, hi = d["ci_pct"]
++    verdict = ("side 1 is slower" if lo > 0 else "side 1 is faster" if hi < 0 else "no difference shown (the interval holds 0)")
++    print("  95 %% interval of the mean's difference: %+.3f to %+.3f ms (%+.2f to %+.2f %%): %s"
++          % (d["ci_ms"][0], d["ci_ms"][1], lo, hi, verdict))
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
++    ap.add_argument("frames", nargs="+", help="frame traces (logs/longshot_frames.csv) of runs with HOS_AB")
++    ap.add_argument("--boot", type=int, default=2000, help="bootstrap resamples (default 2000)")
++    ap.add_argument("--seed", type=int, default=1, help="the bootstrap's seed, for the same interval each time (default 1)")
++    ap.add_argument("--json", action="store_true", help="the numbers as JSON")
++    a = ap.parse_args()
++    results, pooled, pooled_out, pooled_dropped = [], [], [0, 0], 0
++    for path in a.frames:
++        frames = read_frames(path)
++        left_out = [sum(1 for _, v in frames if v in TRANSITION), sum(1 for _, v in frames if v not in STEADY + TRANSITION)]
++        periods, dropped = trim(periods_of(frames))
++        results.append(summary(path, periods, dropped, left_out, a.boot, a.seed))
++        pooled += periods
++        pooled_dropped += dropped
++        pooled_out = [pooled_out[0] + left_out[0], pooled_out[1] + left_out[1]]
++    if len(a.frames) > 1:
++        results.append(summary("all %d files" % len(a.frames), pooled, pooled_dropped, pooled_out, a.boot, a.seed))
++    if a.json:
++        json.dump(results, sys.stdout, indent=1)
++        print()
++        return
++    for r in results:
++        show(r)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/profile_report.py b/scripts/profile_report.py
+index 4f7967ac..e6824a1e 100644
+--- a/scripts/profile_report.py
++++ b/scripts/profile_report.py
+@@ -327,7 +327,7 @@ def main():
+             gpu_block = block
+ 
+     # ---- the frame trace's columns
+-    cols = [c for c in (frames[0].keys() if frames else []) if c not in ("frame", "at_ns")]
++    cols = [c for c in (frames[0].keys() if frames else []) if c not in ("frame", "at_ns", "ab_side")]   # (ab_side: HOS_AB)
+ 
+     def mean(rs, c):
+         return statistics.fmean([num(r, c) for r in rs]) if rs else 0.0

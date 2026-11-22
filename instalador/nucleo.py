@@ -41,15 +41,19 @@ APPDIR = Path.home() / ".local" / "share" / APP
 # port (patches/BASE_PATCH: as alterações do Deck) é aplicado nessas fontes, e a montagem já sai com o renderizador do
 # port e os shaders preparados com ele. (O Hookshot saiu do GitHub em 2026-11-13.)
 BASE_NOME = "Longshot"
-BASE_VERSAO = "v3.0.0-rc.5"
+BASE_VERSAO = "v3.0.0-rc.7"
 BASE_ARQUIVO = f"Longshot-{BASE_VERSAO}-x86_64.AppImage"
 BASE_URL = f"https://git.magicbean.dev/MagicBeanDev/Longshot/releases/download/{BASE_VERSAO}/{BASE_ARQUIVO}"
-BASE_SHA256 = "0912757a0b8e368e82c4825088e3fead91ddb3b1eb139a40d2db9aa57ff84bf9"
-BASE_BYTES = 99600888
+BASE_SHA256 = "e7402000f30f6f28fcd6fc5b9f6d32d0fbf50780678dd9500abaab66860e5315"
+BASE_BYTES = 99858936
 BASE_PATCH = f"deckport-longshot-{BASE_VERSAO}.patch"
 # (a pasta do jogo montada pelo port guarda a identidade da base com que foi montada: a versão do Longshot e a soma do
 # patch. Mudou qualquer um dos dois, ela é montada de novo)
 MARCA = "deckport_base.txt"
+# O perfil do Deck (desde a v0.1.3), em perfil/: a lista quente (as 800 funções do jogo que mais pesam nas pedras de Death
+# Mountain, compiladas em -O2), a ordem delas no executável e o perfil de jogo (PGO) tirado de rodadas no Deck. São
+# listas de endereços e contagens, sem código do jogo. O make_game do Longshot lê os três de <fontes>/work.
+PERFIL = ("hot_funcs.txt", "hot_order.txt", "longshot_pieces.prof")
 # As nightlies do Longshot somem do servidor depois de uns dias: o mesmo arquivo vai também como anexo do release do
 # port, e o instalador tenta os dois (a soma é conferida em qualquer um).
 REPO = "KewinBR/deckport-zelda-oot"
@@ -69,9 +73,14 @@ def urls_da_base(pacote: Path | None = None) -> list[str]:
 
 
 def identidade_base(pacote: Path | None = None) -> str:
-    """'Longshot v3.0.0-rc.5 + 1a2b3c4d5e6f': a base e a soma do patch do port sobre ela."""
+    """'Longshot v3.0.0-rc.7 + 1a2b3c4d5e6f': a base e a soma do patch do port e do perfil do Deck sobre ela."""
+    p = pacote or PACOTE
     try:
-        sha = hashlib.sha256(((pacote or PACOTE) / "patches" / BASE_PATCH).read_bytes()).hexdigest()[:12]
+        h = hashlib.sha256((p / "patches" / BASE_PATCH).read_bytes())
+        for nome in PERFIL:
+            if (p / "perfil" / nome).is_file():
+                h.update((p / "perfil" / nome).read_bytes())
+        sha = h.hexdigest()[:12]
     except OSError:
         sha = "?"
     return f"{BASE_NOME} {BASE_VERSAO} + {sha}"
@@ -407,14 +416,17 @@ class Instalacao(threading.Thread):
             shutil.rmtree(raiz, ignore_errors=True)
             subprocess.run([str(app), "--appimage-extract"], cwd=pasta, check=True, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
-            # a saída 1424x800 também no perfil portátil (o Longshot só a aceita no modo dock); sem ele a imagem sai
-            # em 2048x1152 e o jogo gasta o dobro de memória de vídeo
-            subprocess.run([self._python(raiz), "-I", str(PACOTE / "patches" / "patch_800p.py"), str(fontes)],
-                           check=True)
+            # (até a v0.1.2 o patch_800p.py punha a saída em 1424x800 também no perfil portátil. Desde a v0.1.3 a saída
+            # fica nos 2048x1152 do jogo, como no build testado no Deck do autor: imagem mais nítida, mais memória de
+            # vídeo. O patch_800p.py continua em patches/ para quem quiser a saída menor)
             # o renderizador do port: o builder o compila destas fontes e prepara os shaders com ele. (O carimbo do cache
             # de programas muda com o renderizador e com o modo dos task shaders: com o do Longshot a primeira abertura
             # preparava tudo de novo, 820 de 38809 programas em 6,5 min)
             aplicar_patch(PACOTE / "patches" / BASE_PATCH, fontes)
+            (fontes / "work").mkdir(exist_ok=True)
+            for nome in PERFIL:
+                if (PACOTE / "perfil" / nome).is_file():
+                    shutil.copyfile(PACOTE / "perfil" / nome, fontes / "work" / nome)
             marca.write_text(identidade_base())
         self._avanca(1, 1.0)
         return raiz
@@ -441,6 +453,8 @@ class Instalacao(threading.Thread):
         # os mesmos interruptores que o lançador usa e que entram no carimbo do cache de programas (rodar-zelda.sh)
         amb.update(RX_VK_TASK_MESH_FALLBACK="1", RX_VK_FORCE_MESH_FALLBACK="0", RX_VK_MESH_OPT="1",
                    HOS_HANDHELD="1", HOS_OUTPUT_RES="1424x800", HOS_ASPECT="1.6")
+        # o código do jogo para o nível de CPU do Deck (Zen 2 tem AVX2, FMA, BMI2), como no build testado
+        amb["RX_MARCH"] = "x86-64-v3"
         amb.pop("LD_PRELOAD", None)
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=amb,
                                      errors="replace", start_new_session=True)
