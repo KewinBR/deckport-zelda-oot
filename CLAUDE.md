@@ -59,3 +59,5 @@ vez para ganhar o atualizador.
 ## Publicação aprovada (2026-11-12)
 
 O Kewin aprovou deixar o repositório público e lançar a v0.1.0 em 2026-11-13, com o aviso no README de que a montagem pelo `.nup` dentro do instalador ainda não foi testada até o fim. O Hookshot saiu do GitHub no mesmo dia e a v0.1.0 esperou. Em 2026-11-15 o Kewin pediu o lançamento com o que roda no Deck dele: renderizador do Longshot, base Longshot v3.0.0-rc.3. Versões seguintes continuam precisando do OK dele na hora.
+
+A v0.1.3 saiu em 2026-11-22, com o OK do Kewin ("faz o que falta no Zelda"), depois do instalador testado no Deck LCD com um HOME isolado: montagem completa em 67 min sem erro, 800 funções do perfil achadas, Kokiri a 38,2 fps de mediana (p10 30,2) e nenhum crash em duas corridas de 620 s.
